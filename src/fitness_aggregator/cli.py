@@ -19,10 +19,10 @@ import math
 import pandas as pd
 
 from . import corrections as corr
-from . import metrics, outliers
+from . import merges, metrics, outliers, similarity
 from . import settings as settings_mod
 from .bodyweight import Bodyweight
-from .catalog import ASSISTED, TIMED, UNLOADED
+from .catalog import ASSISTED, LOADED, TIMED, UNLOADED
 from .corrections import Correction, ReconcileResult, format_duration
 from .fixes import describe_set
 from .importers import StrongParseError, parse_strong_csv
@@ -39,6 +39,9 @@ app = typer.Typer(
 workouts_app = typer.Typer(help="List workouts, or undo an automatic workout merge.")
 corrections_app = typer.Typer(help="Show, revert, or restore corrections applied to your data.")
 config_app = typer.Typer(help="Show or change settings.", no_args_is_help=True)
+merge_app = typer.Typer(help="Combine similar exercises (e.g. the same machine at two gyms), or keep them separate.",
+                        no_args_is_help=True)
+app.add_typer(merge_app, name="merge")
 app.add_typer(workouts_app, name="workouts")
 app.add_typer(corrections_app, name="corrections")
 app.add_typer(config_app, name="config")
@@ -47,6 +50,7 @@ TYPE_LABELS = {
     corr.WORKOUT_MERGE: ("workout merged", "workouts merged"),
     corr.DURATION_SUSPECT: ("duration excluded", "durations excluded"),
     corr.VALUE_FIX: ("set fix", "set fixes"),
+    corr.EXERCISE_MERGE: ("exercise combined", "exercises combined"),
 }
 PR_LABELS = {"e1rm": "e1RM", "weight": "Heaviest", "rep": "Rep PR", "seconds": "Longest hold", "reps": "Most reps"}
 SET_LABELS = {SetType.WARMUP: "W", SetType.DROP: "D", SetType.FAILURE: "F"}
@@ -275,6 +279,12 @@ def _print_flag_count(console: Console, store: Store) -> None:
             f"[yellow]{_plural(len(flags), 'set')} flagged as possible data-entry errors.[/yellow] "
             "Review with [bold]fitness check[/bold]."
         )
+    candidates = store.merge_candidates()
+    if candidates:
+        console.print(
+            f"{_plural(len(candidates), 'group')} of similar exercises to review "
+            "(combine or keep separate): [bold]fitness merge review[/bold]."
+        )
 
 
 # --- workouts ---------------------------------------------------------------
@@ -376,13 +386,15 @@ def show(
     if not matches:
         _fail(console, f"no session matches {when!r}.")
 
+    merge_corrections = {} if raw else {
+        c.id: c for c in state.store.corrections(type_=corr.EXERCISE_MERGE, statuses=[corr.ACTIVE])}
     for i, session in enumerate(matches):
         if i:
             console.print()
-        _print_session(console, session)
+        _print_session(console, session, merge_corrections)
 
 
-def _print_session(console: Console, session: Session) -> None:
+def _print_session(console: Console, session: Session, merge_corrections: dict[int, Correction] | None = None) -> None:
     header = Text()
     header.append(session.name, style="bold")
     header.append(f"  {_when(session.started_at)}  ·  ")
@@ -409,12 +421,19 @@ def _print_session(console: Console, session: Session) -> None:
             table.add_column(style="italic")
             for s in entry.sets:
                 table.add_row(*_set_row(s, show_rpe))
-            console.print(f"\n[bold]{entry.name}[/bold]")
+            heading = f"\n[bold]{entry.name}[/bold]"
+            if entry.merged_from:
+                adjusted = f", {entry.merge_label}" if entry.merge_label else ""
+                heading += f"  [dim](recorded as {entry.merged_from}{adjusted})[/dim]"
+            console.print(heading)
             console.print(table)
 
-    if session.applied:
+    applied = list(session.applied)
+    merge_ids = {e.merge_correction_id for e in session.exercises if e.merge_correction_id}
+    applied += [merge_corrections[i] for i in sorted(merge_ids) if merge_corrections and i in merge_corrections]
+    if applied:
         console.print("\n[yellow]Corrections applied:[/yellow]")
-        for c in session.applied:
+        for c in applied:
             console.print(f"  #{c.id} {c.reason}")
 
 
@@ -527,18 +546,30 @@ def _check_formula(console: Console, formula: str) -> None:
         _fail(console, f"unknown formula {formula!r}; use {' or '.join(metrics.FORMULAS)}.")
 
 
-def _resolve_exercise(console: Console, query: str, names) -> str:
-    names = sorted(set(names))
-    exact = [n for n in names if n.lower() == query.lower()]
+def _resolve_exercise(console: Console, query: str, names, merged: dict | None = None) -> str:
+    """Match a name or a unique part of one. A name combined into another resolves to the kept name."""
+    merged = merged or {}
+    names = sorted(set(names) | set(merged))
+    q = query.lower()
+
+    def resolve(name: str) -> str:
+        if name in merged:
+            console.print(f"[dim]{name} is combined into {merged[name].into}; showing that.[/dim]")
+            return merged[name].into
+        return name
+
+    exact = [n for n in names if n.lower() == q]
     if exact:
-        return exact[0]
-    partial = [n for n in names if query.lower() in n.lower()]
-    if len(partial) == 1:
-        return partial[0]
+        return resolve(exact[0])
+    partial = [n for n in names if q in n.lower()]
+    targets = sorted({merged[n].into if n in merged else n for n in partial})
+    if len(targets) == 1:
+        sources = [n for n in partial if n in merged]
+        return resolve(sources[0]) if sources and targets[0] not in partial else targets[0]
     if not partial:
         _fail(console, f"no exercise matches {query!r}. See [bold]fitness exercises[/bold].")
-    shown = ", ".join(partial[:8]) + (", …" if len(partial) > 8 else "")
-    _fail(console, f"{query!r} matches {len(partial)} exercises ({shown}); be more specific.")
+    shown = ", ".join(targets[:8]) + (", …" if len(targets) > 8 else "")
+    _fail(console, f"{query!r} matches {len(targets)} exercises ({shown}); be more specific.")
 
 
 def _bodyweight_note(console: Console, df: pd.DataFrame, bodyweight: Bodyweight) -> None:
@@ -603,7 +634,8 @@ def history(
     console = state.console
     _check_formula(console, formula)
     a = _analysis(state, raw=raw, include_warmups=include_warmups)
-    name = _resolve_exercise(console, exercise, a.df["exercise"])
+    merged = {} if raw else state.store.active_merges()
+    name = _resolve_exercise(console, exercise, a.df["exercise"], merged)
     hist = metrics.exercise_history(a.df, name, formula)
     events = metrics.pr_events(a.df[a.df["exercise"] == name], formula)
     prs_by_session = events.groupby("session")["pr_type"].apply(list).to_dict() if not events.empty else {}
@@ -625,7 +657,8 @@ def history(
         table.add_column(c, justify="left" if c in ("Date", "Top set", "PRs") else "right")
 
     for r in hist.itertuples():
-        date = _date(r.session) + (" [yellow]*[/yellow]" if r.corrected else "")
+        date = _date(r.session) + (" [yellow]*[/yellow]" if r.corrected else "") + (
+            " [cyan]†[/cyan]" if r.merged_from else "")
         types = prs_by_session.get(r.session, [])
         counts = Counter(types)
         prs = ", ".join(
@@ -643,6 +676,8 @@ def history(
                 top = f"{_num(r.top_weight)} lb assist × {_num(r.top_reps)} [dim](= {_num(r.top_load)} lb)[/dim]"
             else:
                 top = f"{_num(r.top_load)} lb × {_num(r.top_reps)}"
+                if not math.isnan(r.top_pre_merge_weight):
+                    top += f" [dim]({_num(r.top_pre_merge_weight)} {_merge_math(r.merge_label)})[/dim]"
             e1 = "—" if math.isnan(r.e1rm) else f"{r.e1rm:,.0f}"
             table.add_row(date, top, e1, str(r.sets), f"{r.reps:g}", f"{r.volume:,.0f}", prs)
     console.print(table)
@@ -653,12 +688,24 @@ def history(
         footer.append(f"best e1RM {best['e1rm']:,.0f} lb ({_num(best['e1rm_load'])} × {_num(best['e1rm_reps'])}, {_date(best['session'])})")
     console.print("[dim]" + "; ".join(footer) + f". e1RM: {formula.title()}, sets of 1–{metrics.E1RM_MAX_REPS} reps.[/dim]")
     _bodyweight_note(console, a.df[a.df["exercise"] == name], a.bodyweight)
+    sources = {name} | {m.source for m in merged.values() if m.into == name}
     if hist["corrected"].any():
         fixes_for = [c for c in state.store.corrections(type_=corr.VALUE_FIX, statuses=[corr.ACTIVE])
-                     if c.target.get("exercise") == name]
+                     if c.target.get("exercise") in sources]
         console.print("[yellow]*[/yellow] [dim]includes corrected sets:[/dim]")
         for c in fixes_for:
             console.print(f"  [dim]#{c.id} {c.reason}[/dim]")
+    for m in sorted((m for m in merged.values() if m.into == name), key=lambda m: m.source):
+        how = f", weights adjusted {m.label}" if m.label else ", weights as recorded"
+        console.print(f"[cyan]†[/cyan] [dim]recorded as {m.source}{how} (correction #{m.correction_id})[/dim]")
+
+
+def _merge_math(label: str) -> str:
+    """'-50 lb' → '− 50', '+40 lb' → '+ 40', '×0.75' → '× 0.75'."""
+    if label.startswith("×"):
+        return f"× {label[1:]}"
+    number = label.removesuffix(" lb")
+    return f"− {number[1:]}" if number.startswith("-") else f"+ {number.lstrip('+')}"
 
 
 # --- prs --------------------------------------------------------------------
@@ -679,7 +726,7 @@ def prs(
     a = _analysis(state, raw=raw)
 
     if exercise:
-        name = _resolve_exercise(console, exercise, a.df["exercise"])
+        name = _resolve_exercise(console, exercise, a.df["exercise"], {} if raw else state.store.active_merges())
         _prs_for_exercise(console, a, name, formula)
         return
 
@@ -880,6 +927,15 @@ def exercises(
                       _date(r.first), _date(r.last), str(days), rest, best)
     console.print(table)
     console.print(f"[dim]{_plural(len(summary), 'exercise')}. Sets exclude warm-ups.[/dim]")
+    merged = {} if raw else state.store.active_merges()
+    shown = set(summary["exercise"])
+    for m in sorted(merged.values(), key=lambda m: m.into):
+        if m.into in shown:
+            how = f" ({m.label})" if m.label else ""
+            console.print(f"[dim]{m.into} includes {m.source}{how}. See fitness merge list.[/dim]")
+    candidates = [] if raw else state.store.merge_candidates()
+    if candidates:
+        console.print(f"[dim]{_plural(len(candidates), 'group')} of similar exercises to review: fitness merge review[/dim]")
 
 
 # --- check & fix ------------------------------------------------------------
@@ -1037,6 +1093,313 @@ def _print_flag_group(console: Console, g: outliers.FlagGroup, i: int, n: int) -
     if g.swap_plausible:
         swapped = ", ".join(f"{f.set.reps:g} lb × {f.set.weight:g}" for f in g.flags)
         console.print(f"  Looks like weight and reps were swapped → {swapped}")
+
+
+# --- merge (combining similar exercises) --------------------------------------
+
+TIER_TEXT = {
+    similarity.LIKELY: "Likely the same exercise (names match apart from numbering or plurals)",
+    similarity.POSSIBLE: "Possibly the same exercise (similar names)",
+}
+
+
+@dataclass
+class Member:
+    name: str
+    sets: list[similarity.TopSet]
+
+    @property
+    def sessions(self) -> int:
+        return len(self.sets)
+
+
+def _members(store: Store, group: similarity.CandidateGroup) -> list[Member]:
+    return [Member(n, store.top_sets(n)) for n in group.names]
+
+
+def _default_kept(members: list[Member]) -> int:
+    """Index of the name to keep by default: most sessions, then the one used first."""
+    def rank(i):
+        m = members[i]
+        first = m.sets[0].when if m.sets else datetime.max
+        return (-m.sessions, first)
+    return min(range(len(members)), key=rank)
+
+
+def _offset_allowed(kind: str) -> bool:
+    return kind in (LOADED, ASSISTED)
+
+
+def _print_candidate(console: Console, store: Store, catalog, group, members, i: int, n: int) -> None:
+    console.print(f"[bold]({i}/{n}) {TIER_TEXT[group.tier]}[/bold]")
+    table = Table(box=None, show_header=False, pad_edge=False, padding=(0, 2, 0, 0))
+    for _ in range(5):
+        table.add_column()
+    for j, m in enumerate(members, start=1):
+        if m.sets:
+            span = f"{m.sets[0].when:%Y-%m-%d} → {m.sets[-1].when:%Y-%m-%d}"
+            last = f"last top set {similarity.describe_sets(m.sets[-1:])}"
+        else:
+            span, last = "", "no working sets"
+        table.add_row(escape(f"  [{j}]"), m.name, _plural(m.sessions, "session"), span, f"[dim]{last}[/dim]")
+    console.print(table)
+    kept = members[_default_kept(members)]
+    kind = catalog.kind(kept.name)
+    for m in members:
+        if m is kept:
+            continue
+        s = similarity.suggest_offset(kept.name, kept.sets, m.name, m.sets, kind)
+        console.print(f"  {s.relation}")
+        if s.kept_sets and s.adjusted_sets and _offset_allowed(kind):
+            console.print(f"  [dim]Compared top sets: {kept.name} {similarity.describe_sets(s.kept_sets)} vs "
+                          f"{m.name} {similarity.describe_sets(s.adjusted_sets)}.[/dim]")
+            console.print(f"  {s.summary}")
+
+
+def _print_preview(console: Console, kept: Member, others: list[tuple[Member, float | None, float | None]]) -> None:
+    """Text preview of the combined timeline around the switch, with adjustments applied."""
+    rows = [(t.when, kept.name, t, t.weight) for t in kept.sets]
+    for m, offset, factor in others:
+        merge = merges.Merge(m.name, kept.name, offset, factor)
+        rows += [(t.when, m.name, t, merge.adjust(t.weight)) for t in m.sets]
+    rows.sort(key=lambda r: r[0])
+    if not rows:
+        return
+    switch = min((m.sets[0].when for m, _, _ in others if m.sets), default=rows[0][0])
+    nearest = sorted(rows, key=lambda r: abs((r[0] - switch).total_seconds()))[:12]
+    nearest.sort(key=lambda r: r[0])
+    table = Table(title=f"Combined as {kept.name} (12 sessions nearest the switch)", title_justify="left",
+                  box=None, header_style="bold", pad_edge=False)
+    for col in ("Date", "Recorded as", "Top set", "Counts as"):
+        table.add_column(col)
+    for when, name, t, adjusted in nearest:
+        counts = f"{_num(adjusted)} lb × {_num(t.reps)}" if name != kept.name else ""
+        table.add_row(f"{when:%Y-%m-%d}", name, f"{_num(t.weight)} lb × {_num(t.reps)}", counts)
+    console.print(table)
+    console.print("[dim]A chart preview comes with the plotting milestone.[/dim]")
+
+
+def _parse_adjustment(text: str) -> tuple[float | None, float | None]:
+    """'-50' → offset −50 lb; 'x0.75' → factor 0.75; '0' or blank → none."""
+    t = text.strip().lower().replace("lb", "").replace(" ", "").replace("−", "-")
+    if t in ("", "0", "none"):
+        return None, None
+    if t[0] in "x*×":
+        return None, float(t[1:])
+    return float(t), None
+
+
+def _pick(console: Console, prompt: str, members: list[Member], default: list[int], many: bool) -> list[int]:
+    shown = ",".join(str(i + 1) for i in default)
+    while True:
+        text = typer.prompt(prompt, default=shown).strip()
+        try:
+            picked = [int(x) - 1 for x in text.replace(" ", "").split(",") if x]
+        except ValueError:
+            picked = []
+        if picked and all(0 <= i < len(members) for i in picked) and (many or len(picked) == 1) \
+                and len(set(picked)) == len(picked):
+            return picked
+        console.print(f"Enter {'numbers like 1,2' if many else 'one number'} from the list.")
+
+
+@merge_app.command("review")
+def merge_review(
+    ctx: typer.Context,
+    list_only: bool = typer.Option(False, "--list", help="List the candidates without asking about them."),
+):
+    """Go through similar exercises and decide: combine (optionally with an offset), or keep separate."""
+    state = _state(ctx)
+    console = state.console
+    store = state.store
+    if not store.workout_count():
+        console.print("No workouts yet. Run [bold]fitness import FILE[/bold] first.")
+        return
+    groups = store.merge_candidates()
+    if not groups:
+        decided = len(store.active_merges()) + len(store.separate_pairs())
+        note = f" ({_plural(decided, 'decision')} made earlier; see fitness merge list.)" if decided else ""
+        console.print(f"No similar exercises to review.{note}")
+        return
+    console.print(f"{_plural(len(groups), 'group')} of similar exercises.\n")
+    catalog = store.catalog()
+
+    for i, group in enumerate(groups, start=1):
+        members = _members(store, group)
+        _print_candidate(console, store, catalog, group, members, i, len(groups))
+        if list_only:
+            console.print()
+            continue
+        kind = catalog.kind(members[_default_kept(members)].name)
+        options = ["c"] + (["o"] if _offset_allowed(kind) else []) + ["k", "p", "s", "q"]
+        menu = "  [c] combine as-is" + ("  [o] combine with weight offset" if "o" in options else "") + \
+               "  [k] keep separate  [p] preview combined  [s] skip  [q] quit"
+        while True:
+            console.print(escape(menu))
+            choice = typer.prompt(">", default="s", show_default=False).strip().lower()
+            if choice not in options:
+                console.print(f"Choose one of {', '.join(options)}.")
+                continue
+            if choice == "p":
+                kept_i = _default_kept(members)
+                others = []
+                for j, m in enumerate(members):
+                    if j != kept_i:
+                        s = similarity.suggest_offset(members[kept_i].name, members[kept_i].sets, m.name, m.sets, kind)
+                        others.append((m, s.offset, None))
+                _print_preview(console, members[kept_i], others)
+                continue
+            break
+        if choice == "q":
+            break
+        if choice == "s":
+            console.print("[dim]Skipped; it will be offered again next time.[/dim]\n")
+            continue
+        if choice == "k":
+            store.keep_separate(group.names)
+            console.print("[dim]Kept separate; won't ask again (undo with fitness merge forget).[/dim]\n")
+            continue
+
+        everyone = list(range(len(members)))
+        chosen = everyone if len(members) == 2 else _pick(console, "Combine which? (e.g. 1,2)", members, everyone, True)
+        if len(chosen) < 2:
+            console.print("[yellow]Pick at least two to combine.[/yellow]\n")
+            continue
+        default_kept = _default_kept(members)
+        kept_i = _pick(console, "Keep which name?", members,
+                       [default_kept if default_kept in chosen else chosen[0]], False)[0]
+        if kept_i not in chosen:
+            chosen.append(kept_i)
+        kept = members[kept_i]
+        kind = catalog.kind(kept.name)
+        for j in chosen:
+            if j == kept_i:
+                continue
+            m = members[j]
+            offset = factor = None
+            if choice == "o":
+                s = similarity.suggest_offset(kept.name, kept.sets, m.name, m.sets, kind)
+                default = "" if s.offset is None else f"{s.offset:+g}"
+                hint = "lb like -50, factor like x0.75" if kind == LOADED else "lb like -10"
+                while True:
+                    text = typer.prompt(f"  Adjustment for {m.name} ({hint}, 0 for none)", default=default or "0")
+                    try:
+                        offset, factor = _parse_adjustment(text)
+                        if factor is not None and kind != LOADED:
+                            raise ValueError
+                        break
+                    except ValueError:
+                        console.print("  Enter a number of lb (e.g. -50)" + (" or a factor (e.g. x0.75)." if kind == LOADED else "."))
+            try:
+                c = store.add_exercise_merge(m.name, kept.name, offset=offset, factor=factor)
+            except ValueError as exc:
+                console.print(f"[yellow]{exc}[/yellow]")
+                continue
+            console.print(f"Recorded correction #{c.id}: {c.reason}")
+        left_out = [members[j].name for j in everyone if j not in chosen]
+        for name in left_out:
+            store.keep_separate([name, kept.name])
+            console.print(f"[dim]Kept {name} separate from {kept.name}.[/dim]")
+        console.print()
+
+
+def _all_names(state: State) -> list[str]:
+    return sorted(state.store.exercise_names(state.store.load_workouts()))
+
+
+@merge_app.command("list")
+def merge_list(ctx: typer.Context):
+    """Show combined exercises and pairs you chose to keep separate."""
+    state = _state(ctx)
+    console = state.console
+    store = state.store
+    active = store.active_merges()
+    separate = sorted(tuple(sorted(p)) for p in store.separate_pairs())
+    if not active and not separate:
+        console.print("No decisions yet. Review similar exercises with [bold]fitness merge review[/bold].")
+        return
+    if active:
+        table = Table(title="Combined", title_justify="left", box=None, header_style="bold", pad_edge=False)
+        for col in ("Recorded as", "Counts as", "Adjustment", "Correction"):
+            table.add_column(col)
+        for m in sorted(active.values(), key=lambda m: (m.into, m.source)):
+            table.add_row(m.source, m.into, m.label or "none", f"#{m.correction_id}")
+        console.print(table)
+    if separate:
+        table = Table(title="\nKept separate", title_justify="left", box=None, header_style="bold", pad_edge=False)
+        table.add_column("Exercise")
+        table.add_column("")
+        table.add_column("Exercise")
+        for a, b in separate:
+            table.add_row(a, "≠", b)
+        console.print(table)
+    console.print("[dim]Undo a combination with: fitness merge undo NAME. "
+                  "Forget a keep-separate decision with: fitness merge forget A B[/dim]")
+
+
+@merge_app.command("add")
+def merge_add(
+    ctx: typer.Context,
+    source: str = typer.Argument(..., help="Exercise to combine away (its sets get counted under --into)."),
+    into: str = typer.Option(..., "--into", help="Exercise name to keep."),
+    offset: Optional[float] = typer.Option(None, "--offset", help="lb to add to every set of SOURCE (e.g. -50)."),
+    factor: Optional[float] = typer.Option(None, "--factor", help="Multiply every SOURCE weight by this (e.g. 0.75)."),
+):
+    """Combine one exercise into another, optionally adjusting its weights."""
+    state = _state(ctx)
+    console = state.console
+    names = _all_names(state)
+    source = _resolve_exercise(console, source, names)
+    into = _resolve_exercise(console, into, names)
+    try:
+        c = state.store.add_exercise_merge(source, into, offset=offset, factor=factor)
+    except ValueError as exc:
+        _fail(console, str(exc))
+    console.print(f"Recorded correction #{c.id}: {c.reason}")
+    console.print(f"[dim]Undo with: fitness merge undo \"{source}\"[/dim]")
+
+
+@merge_app.command("separate")
+def merge_separate(
+    ctx: typer.Context,
+    names: list[str] = typer.Argument(..., help="Two or more exercises that are different movements."),
+):
+    """Record that exercises are different, so they aren't offered for combining again."""
+    state = _state(ctx)
+    console = state.console
+    all_names = _all_names(state)
+    resolved = sorted({_resolve_exercise(console, n, all_names) for n in names})
+    if len(resolved) < 2:
+        _fail(console, "name at least two different exercises.")
+    pairs = state.store.keep_separate(resolved)
+    console.print(f"Keeping {', '.join(resolved)} separate ({_plural(pairs, 'pair')}).")
+
+
+@merge_app.command("forget")
+def merge_forget(ctx: typer.Context, a: str, b: str):
+    """Forget a keep-separate decision, so the pair is offered for review again."""
+    state = _state(ctx)
+    console = state.console
+    names = _all_names(state)
+    a, b = _resolve_exercise(console, a, names), _resolve_exercise(console, b, names)
+    if state.store.forget_separate(a, b):
+        console.print(f"Forgot the decision to keep {a} and {b} separate.")
+    else:
+        _fail(console, f"{a} and {b} weren't marked as separate.")
+
+
+@merge_app.command("undo")
+def merge_undo(ctx: typer.Context, source: str = typer.Argument(..., help="The exercise that was combined away.")):
+    """Undo a combination; the exercise goes back to its own history."""
+    state = _state(ctx)
+    console = state.console
+    source = _resolve_exercise(console, source, _all_names(state))
+    try:
+        c = state.store.undo_exercise_merge(source, state.settings)
+    except (KeyError, ValueError) as exc:
+        _fail(console, str(exc.args[0]))
+    console.print(f"Reverted #{c.id}: {c.reason}")
+    console.print(f"[dim]Re-apply with: fitness corrections restore {c.id}[/dim]")
 
 
 # --- config -----------------------------------------------------------------

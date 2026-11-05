@@ -35,7 +35,7 @@ PR_CANDIDATES = ("normal", "failure")  # set types that can be top sets / PRs
 SET_COLUMNS = [
     "session", "session_name", "workout", "exercise", "kind", "set_type", "position",
     "weight", "reps", "seconds", "rest_seconds", "rpe", "load", "bodyweight", "volume",
-    "corrected", "pr_candidate",
+    "corrected", "pr_candidate", "merged_from", "merge_label", "pre_merge_weight",
 ]
 
 
@@ -75,8 +75,12 @@ def sets_frame(
                         "load": load,
                         "bodyweight": bw,
                         "volume": load * s.reps if counts_load else 0.0,
-                        "corrected": bool(s.correction_ids),
+                        # Set fixes only; merge adjustments are shown through merged_from.
+                        "corrected": any(c != entry.merge_correction_id for c in s.correction_ids),
                         "pr_candidate": s.set_type.value in PR_CANDIDATES,
+                        "merged_from": entry.merged_from or "",
+                        "merge_label": entry.merge_label,
+                        "pre_merge_weight": np.nan if s.pre_merge_weight is None else s.pre_merge_weight,
                     })
     df = pd.DataFrame(rows, columns=SET_COLUMNS)
     for col in ("session", "workout"):
@@ -128,6 +132,7 @@ def exercise_history(df: pd.DataFrame, exercise: str, formula: str = "epley") ->
             "top_load": np.nan if top is None else top["load"],
             "top_reps": np.nan if top is None else top["reps"],
             "top_weight": np.nan if top is None else top["weight"],
+            "top_pre_merge_weight": np.nan if top is None else top["pre_merge_weight"],
             "e1rm": np.nan if best is None else best["e1rm"],
             "e1rm_load": np.nan if best is None else best["load"],
             "e1rm_reps": np.nan if best is None else best["reps"],
@@ -139,6 +144,8 @@ def exercise_history(df: pd.DataFrame, exercise: str, formula: str = "epley") ->
             "max_reps": g["reps"].max(),
             "min_assistance": cand["weight"].min() if not cand.empty else np.nan,
             "corrected": bool(g["corrected"].any()),
+            "merged_from": next((m for m in g["merged_from"] if m), ""),
+            "merge_label": next((m for m in g["merge_label"] if m), ""),
         })
     return pd.DataFrame(rows)
 

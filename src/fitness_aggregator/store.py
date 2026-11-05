@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Iterable
 
 from . import corrections as corr
-from . import fixes, outliers
+from . import fixes, merges, outliers, similarity
 from .catalog import Catalog
 from .corrections import Correction, PlannedCorrection, ReconcileResult, reconcile
 from .importers.strong_csv import ParseResult
@@ -35,7 +35,7 @@ from .sessions import Session, build_sessions, plan_auto_corrections, reverted_k
 from .settings import DEFAULT_DIR, Settings
 
 DB_ENV_VAR = "FITNESS_AGGREGATOR_DB"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -85,6 +85,15 @@ CREATE TABLE IF NOT EXISTS corrections (
 CREATE TABLE IF NOT EXISTS dismissed_flags (
     flag_key     TEXT PRIMARY KEY,
     dismissed_at TEXT NOT NULL
+);
+
+-- Exercise pairs you chose to keep separate in `fitness merge review` (added in schema 3).
+-- Stored with a < b so each pair has one row.
+CREATE TABLE IF NOT EXISTS separate_exercises (
+    a          TEXT NOT NULL,
+    b          TEXT NOT NULL,
+    decided_at TEXT NOT NULL,
+    PRIMARY KEY (a, b)
 );
 
 CREATE TABLE IF NOT EXISTS imports (
@@ -438,12 +447,11 @@ class Store:
         result = reconcile(existing, planned)
         now = _iso(_now())
 
-        # Your own fixes: stale when the raw data no longer has the values they were made against.
-        by_key = {workout_key(w.started_at): w for w in workouts}
+        # Your own corrections: stale when the raw data no longer has what they were made against.
         for c in existing:
             if c.source != corr.USER or c.status not in (corr.ACTIVE, corr.STALE):
                 continue
-            matches = fixes.raw_matches(by_key, c)
+            matches = self._user_correction_matches(c, workouts)
             if c.status == corr.ACTIVE and not matches:
                 result.stale.append(c)
                 self.conn.execute(
@@ -497,12 +505,17 @@ class Store:
                 f"correction {correction_id} is obsolete (its condition no longer applies)"
             )
         if status == corr.ACTIVE and current.source == corr.USER:
-            by_key = {workout_key(w.started_at): w for w in self.load_workouts()}
-            if not fixes.raw_matches(by_key, current):
+            workouts = self.load_workouts()
+            if not self._user_correction_matches(current, workouts):
                 raise ValueError(
                     f"correction {correction_id} no longer matches the imported data "
-                    "(it was probably changed in Strong); make a new fix instead"
+                    "(it was probably changed in Strong); make a new one instead"
                 )
+            if current.type == corr.EXERCISE_MERGE:
+                others = merges.active_merges(self.corrections(statuses=[corr.ACTIVE]))
+                others.pop(current.target["exercise"], None)
+                merges.check_merge(current.target["exercise"], current.after["into"], others,
+                                   self.exercise_names(workouts))
         with self.conn:
             self.conn.execute(
                 "UPDATE corrections SET status = ?, updated_at = ? WHERE id = ?",
@@ -519,7 +532,19 @@ class Store:
         if raw:
             return build_sessions(workouts)
         active = self.corrections(statuses=[corr.ACTIVE])
-        return build_sessions(fixes.apply_value_fixes(workouts, active), active)
+        fixed = fixes.apply_value_fixes(workouts, active)
+        return build_sessions(merges.apply_exercise_merges(fixed, active), active)
+
+    @staticmethod
+    def exercise_names(workouts: Iterable[Workout]) -> set[str]:
+        return {e.name for w in workouts for e in w.exercises}
+
+    def _user_correction_matches(self, c: Correction, workouts: list[Workout]) -> bool:
+        if c.type == corr.VALUE_FIX:
+            return fixes.raw_matches({workout_key(w.started_at): w for w in workouts}, c)
+        if c.type == corr.EXERCISE_MERGE:
+            return merges.merges_valid_against(c, self.exercise_names(workouts))
+        return True
 
     def catalog(self, overrides_path: Path | None = None) -> Catalog:
         return Catalog.build(self.load_workouts(), overrides_path)
@@ -596,6 +621,77 @@ class Store:
     def corrections_for_workouts(self, keys: Iterable[str]) -> list[Correction]:
         keys = set(keys)
         return [c for c in self.corrections() if c.workout in keys]
+
+    # --- combining exercises -------------------------------------------------
+
+    def active_merges(self) -> dict[str, merges.Merge]:
+        return merges.active_merges(self.corrections(statuses=[corr.ACTIVE]))
+
+    def add_exercise_merge(
+        self, source: str, into: str, *, offset: float | None = None, factor: float | None = None
+    ) -> Correction:
+        """Combine ``source`` into ``into``. Combining the same exercise again updates its correction."""
+        current = self.active_merges()
+        current.pop(source, None)
+        merges.check_merge(source, into, current, self.exercise_names(self.load_workouts()), offset, factor)
+        planned = merges.plan_merge(source, into, offset, factor)
+        existing = next((c for c in self.corrections(type_=corr.EXERCISE_MERGE) if c.target == planned.target), None)
+        now = _iso(_now())
+        with self.conn:
+            if existing is None:
+                correction_id = self._insert_correction(planned, now).lastrowid
+            else:
+                self.conn.execute(
+                    "UPDATE corrections SET after = ?, reason = ?, status = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(planned.after), planned.reason, corr.ACTIVE, now, existing.id),
+                )
+                correction_id = existing.id
+            self.conn.execute(
+                "DELETE FROM separate_exercises WHERE a = ? AND b = ?", tuple(sorted((source, into)))
+            )
+        return self.get_correction(correction_id)
+
+    def undo_exercise_merge(self, source: str, settings: Settings) -> Correction:
+        c = next((c for c in self.corrections(type_=corr.EXERCISE_MERGE, statuses=[corr.ACTIVE])
+                  if c.target["exercise"] == source), None)
+        if c is None:
+            raise KeyError(f"{source} isn't combined into anything")
+        updated, _ = self.set_correction_status(c.id, corr.REVERTED, settings)
+        return updated
+
+    def separate_pairs(self) -> set[frozenset[str]]:
+        return {frozenset((a, b)) for a, b in self.conn.execute("SELECT a, b FROM separate_exercises")}
+
+    def keep_separate(self, names: Iterable[str]) -> int:
+        """Record that these exercises are different; returns how many pairs were recorded."""
+        names = sorted(set(names))
+        pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1:]]
+        now = _iso(_now())
+        with self.conn:
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO separate_exercises (a, b, decided_at) VALUES (?, ?, ?)",
+                [(a, b, now) for a, b in pairs],
+            )
+        return len(pairs)
+
+    def forget_separate(self, a: str, b: str) -> bool:
+        with self.conn:
+            cur = self.conn.execute("DELETE FROM separate_exercises WHERE a = ? AND b = ?", tuple(sorted((a, b))))
+        return cur.rowcount > 0
+
+    def merge_candidates(self) -> list[similarity.CandidateGroup]:
+        """Similar exercises not yet decided on, using current names (merges resolved)."""
+        current = self.active_merges()
+        names = {merges.canonical(n, current) for n in self.exercise_names(self.load_workouts())}
+        return similarity.find_candidates(names, self.separate_pairs())
+
+    def top_sets(self, exercise: str) -> list[similarity.TopSet]:
+        """Top set per workout for an exercise as recorded (set fixes applied, not merges)."""
+        workouts = fixes.apply_value_fixes(self.load_workouts(), self.corrections(statuses=[corr.ACTIVE]))
+        return similarity.top_sets(workouts, exercise)
+
+    def merged_sources(self, into: str) -> list[str]:
+        return sorted(m.source for m in self.active_merges().values() if m.into == into)
 
 
 __all__ = [

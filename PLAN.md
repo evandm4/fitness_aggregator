@@ -127,7 +127,7 @@ Use SQLite (default `~/.fitness_aggregator/lifts.db`, overridable with `--db`) w
 |---|---|
 | `workouts`, `sets` | Raw imported data, exactly as exported. Never modified after import. |
 | `corrections` | Every change applied on top of the raw data (§2b) |
-| `exercise_links` | Your merge decisions for similar exercises: combined, combined with offset, or kept separate (§4) |
+| `separate_exercises` | Pairs of exercises you chose to keep separate (§4). Combinations themselves are `exercise_merge` corrections. |
 | `bodyweight` | Dated bodyweight entries (empty until an Apple Health import exists, §2d) |
 
 Settings are kept in `config/settings.toml`, which you can edit by hand or change with `fitness config set`.
@@ -159,13 +159,13 @@ Each entry records: id, timestamp, type, source (`auto` or `user`), the affected
 | `workout_merge` | auto | "Merged 2026-06-02 14:06 workout into 14:00 workout: started 3 min after it ended (threshold 60 min)" |
 | `duration_suspect` | auto | "Duration 14h 7m excluded from duration stats: over 4h, probably a timer left running" |
 | `value_fix` | user | "Swapped weight and reps on 3 Preacher Curl (Machine) sets, 2026-06-04" |
-| `exercise_merge` | user | "Hip Abductor 2 (Machine) combined into Hip Abductor (Machine) with −55 lb offset" |
+| `exercise_merge` | user | "Hip Abductor 2 (Machine) combined into Hip Abductor (Machine) with -50 lb offset" |
 
 How corrections are reported:
 - **On import:** a summary of what was new and every correction applied, for example "1 workout merged, 2 durations excluded", plus how many sets are flagged as possible data-entry errors.
 - **Flags are not corrections.** A flagged set changes nothing, so flags aren't log entries. `fitness check` lists them; each is either fixed (which creates a `value_fix` entry) or dismissed (remembered in a `dismissed_flags` table so it isn't raised again). Flag rules: over 30 reps on a weighted set (swap suggested when the swapped weight fits your usual range), a working set over 2.5× your usual top set, and weight with 0 reps on a normal or drop set (failure sets are exempt, since 0 reps there is a missed attempt).
 - **`fitness corrections`:** the full log, filterable by `--type`, `--auto`/`--user`, `--exercise`, or `--since`. `fitness corrections revert ID` undoes one entry.
-- **In output:** `history` and `show` mark corrected rows (for example with `*`) and list the reasons beneath the table. Plots built from corrected data get a small footnote such as "Includes 1 exercise merge (−55 lb offset); see `fitness corrections`."
+- **In output:** `history` and `show` mark corrected rows (for example with `*`) and list the reasons beneath the table. Plots built from corrected data get a small footnote such as "Includes 1 exercise merge (-50 lb offset); see `fitness corrections`."
 
 Parsing steps that change no values, such as attaching rest timers to sets or excluding warm-ups, are reported as counts on import, not as individual log entries.
 
@@ -233,7 +233,11 @@ The program does not decide which exercises are "the same". It finds candidates 
 Exercise names are grouped as similar when they match after normalizing:
 - `Tricep` and `Triceps` treated as the same word
 - trailing machine numbers removed (`Hip Abductor 2 (Machine)` → `Hip Abductor (Machine)`, `Crunch (Machine 2)` → `Crunch (Machine)`)
-- case, punctuation, and word order ignored, with a fuzzy-match fallback using `difflib` (stdlib)
+- case, punctuation, and word order ignored
+
+These are shown as **likely the same exercise**. Your data has five such groups: Crunch, Hip Abductor, Hip Adductor, Lat Pulldown, and Leg Extension, each a machine and its "2" variant.
+
+A fuzzy match (`difflib`, similarity ≥ 0.88) among names with no likely match finds **possibly the same exercise** pairs. Pairs that differ by an opposite word (incline/decline, abductor/adductor, barbell/dumbbell, seated/standing, and a few others) are left out, because on your data those were all different movements. That leaves three possible pairs, such as `Real Tricep Extension (Machine)` and `Triceps Extension (Machine)`.
 
 Groups you have already decided on are not shown again. New exercise names that appear in later imports are offered for review automatically.
 
@@ -241,32 +245,26 @@ Groups you have already decided on are not shown again. New exercise names that 
 
 For each candidate group, the program shows the exercises side by side, then asks what to do:
 
-The example below uses the real numbers from your data:
+This is the actual output for your data:
 
 ```
-Similar exercises (group 1 of N):
-
-                                 Sessions  Date range                Last/first top sets
-  [1] Hip Abductor (Machine)          12   2026-06-02 → 2026-08-12   last 3: 145–160 lb × 14
-  [2] Hip Abductor 2 (Machine)         9   2026-08-22 → 2026-11-01   first 3: 205 lb × 12–14
-
-  You switched from [1] to [2] on 2026-08-22 (no overlap).
-  Around the switch, [2] sets were about 55 lb heavier at similar reps.
-  Suggested: −55 lb on Hip Abductor 2 (or ×0.74).
-
-  (c) combine as-is
-  (o) combine with weight offset
-  (k) keep separate (don't ask again)
-  (s) skip for now
-  (p) plot both on one chart first
+(2/8) Likely the same exercise (names match apart from numbering or plurals)
+  [1]  Hip Abductor (Machine)    12 sessions  2026-06-02 → 2026-08-12  last top set 160 lb × 14
+  [2]  Hip Abductor 2 (Machine)  9 sessions   2026-08-22 → 2026-11-01  last top set 205 lb × 10
+  You switched from Hip Abductor (Machine) to Hip Abductor 2 (Machine) on 2026-08-22 (no overlap).
+  Compared top sets: Hip Abductor (Machine) 145–160 lb × 14 vs Hip Abductor 2 (Machine) 205 lb × 12–14.
+  Hip Abductor 2 (Machine) top sets were about 50 lb heavier at similar reps. Suggested: -50 lb on Hip Abductor 2 (Machine) (or ×0.75).
+  [c] combine as-is  [o] combine with weight offset  [k] keep separate  [p] preview combined  [s] skip  [q] quit
 >
 ```
 
-- **Combine as-is:** pick which name to keep. The other exercise's sets are counted under that name.
-- **Combine with offset:** pick which name to keep and which side to adjust, then accept the suggested offset or enter your own. The offset is an amount in lb added to or subtracted from every set of one exercise (for example −55 lb on every Hip Abductor 2 set). A percentage factor (for example ×0.74) is also available, since machine differences are often proportional.
-  - **How the suggested offset is calculated:** compare top sets at similar rep counts from the sessions **on either side of the switch**: the last 3 sessions of one exercise and the first 3 of the other, or the sessions closest in time if you used both during the same period. Comparing whole-history averages would count your real progress as machine difference. The suggestion is rounded to 5 lb. It's only a starting point; you confirm or override it.
-- **Plot both first:** shows the progress chart of both exercises together, plus a preview of the combined line with the offset applied, before you decide.
-- **The original value is kept for every adjusted set.** `history` shows both, for example `150 lb (205 − 55)`. Offsets apply to PRs, e1RM, and volume.
+- **Combine as-is:** pick which name to keep (default: the one with more sessions). The other exercise's sets are counted under that name. In a group of three or more you also pick which ones to combine; the rest are recorded as separate from the kept name.
+- **Combine with offset:** pick which name to keep, then accept the suggested adjustment or enter your own: an amount in lb added to every set of the other exercise (`-50`), or a factor (`x0.75`), since machine differences are often proportional. Offsets are offered for weighted and assisted exercises; timed and unloaded exercises can only be combined as-is. Sets with no weight are renamed but not adjusted, and adjusted weights never go below 0.
+  - **How the suggested offset is calculated:** compare top sets from the sessions **on either side of the switch**: the last 3 sessions of one exercise and the first 3 of the other, or the closest sessions if you used both during the same period. Comparing whole-history averages would count your real progress as machine difference. Rep counts are evened out with the Epley formula (your kept exercise's weight at the other's average reps), which is why Hip Abductor comes out at −50 lb rather than the −55 lb a raw comparison gives. Assisted exercises compare assistance directly. The suggestion is rounded to 5 lb. It's only a starting point; you confirm or override it.
+- **Preview combined:** shows the 12 sessions nearest the switch as one timeline, with what each set was recorded as and what it counts as after the suggested adjustment. This is a text preview for now; milestone 5 adds the chart.
+- **The original value is kept for every adjusted set.** `history` shows both, for example `155 lb × 12 (205 − 50)`, with a `†` footnote naming the original exercise, and `show` gives the recorded name and original weights. Offsets apply to PRs, e1RM, and volume.
+- **Names that are combined away still work** in `history` and `prs`: `fitness history "hip abductor 2"` shows the combined history.
+- **New exercise names are picked up automatically.** Each import reports how many groups are waiting for review.
 
 Every decision becomes an `exercise_merge` entry in the corrections log and can be undone with `fitness merge undo` or `fitness corrections revert`. Non-interactive commands (`fitness merge add …`) do the same thing for scripting, and a future GUI can call the same functions with a dialog in place of the prompt.
 
@@ -311,10 +309,11 @@ fitness fix --workout 2026-06-04T13:53:53 --exercise "Preacher Curl (Machine)" -
 fitness corrections [--type T] [--auto|--user] [--exercise E] [--since D]   # full corrections log
 fitness corrections revert ID
 
-fitness merge review                        # interactive similar-exercise review (§4)
+fitness merge review [--list]               # interactive similar-exercise review (§4)
 fitness merge list                          # current merge decisions and offsets
-fitness merge add "Hip Abductor 2 (Machine)" --into "Hip Abductor (Machine)" [--offset -55 | --factor 0.74]
+fitness merge add "Hip Abductor 2 (Machine)" --into "Hip Abductor (Machine)" [--offset -50 | --factor 0.75]
 fitness merge separate "Crunch (Machine)" "Crunch (Machine 2)"
+fitness merge forget "Crunch (Machine)" "Crunch (Machine 2)"   # undo a keep-separate decision
 fitness merge undo "Hip Abductor 2 (Machine)"
 
 fitness workouts unmerge 2026-06-02T14:06:32   # undo an automatic workout merge
@@ -359,8 +358,8 @@ Every plot function has the signature `plot_x(df, **opts) -> matplotlib.figure.F
 1. ✅ **Parser + models.** `strong_csv.py` handles every quirk in §1. Tests use small fixture files, plus a smoke test on the real file: 104 workouts, 1,962 sets, and the rest timers attached.
 2. ✅ **Store, import, corrections log.** SQLite schema, full-history import with change summary (§2c), automatic workout merging and suspect-duration flags, all recorded in the log. Commands: `import`, `workouts`, `show`, `corrections`. The test for this step checks that the sample data ends up with 103 sessions and exactly one workout merge, on 2026-06-02.
 3. ✅ **Metrics + text commands.** `history`, `prs`, `stats`, `exercises`, plus `check` / `fix` for flagged outliers.
-4. **Similar-exercise merging.** Candidate detection, offset suggestion, `merge review` and the other `merge` commands.
-5. **Core plots.** `progress` (including the merge preview), `volume`, `calendar`.
+4. ✅ **Similar-exercise merging.** Candidate detection, offset suggestion, `merge review` and the other `merge` commands.
+5. **Core plots.** `progress` (including a chart version of the merge preview), `volume`, `calendar`.
 6. **Metadata + remaining plots.** `exercises.toml` muscle groups, then `sets-per-muscle`, `rep-prs`, `duration`, `frequency`, and `dashboard`. `bodyweight_at()` with the placeholder.
 
 **Later / out of scope for v1:** GUI (PySide6 desktop or a Streamlit web dashboard, both reusing `metrics` and `plots`); Apple Health bodyweight import (§2d); manual set logging from the CLI; importers for other apps (Hevy, etc.) behind the same `importers/` interface.

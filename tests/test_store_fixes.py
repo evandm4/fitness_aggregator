@@ -4,7 +4,7 @@ import pytest
 from fitness_aggregator import corrections as corr
 from fitness_aggregator.importers import parse_strong_csv
 from fitness_aggregator.settings import Settings
-from fitness_aggregator.store import Store
+from fitness_aggregator.store import SCHEMA_VERSION, Store
 from helpers import workout_rows, write_export
 
 HISTORY = [workout_rows(f"2026-06-0{d} 10:00:00", exercises=(("Preacher Curl (Machine)", ((100, 10),)),))
@@ -102,4 +102,5 @@ def test_schema_1_database_is_upgraded(tmp_path):
         s.conn.commit()
     with Store(path) as s:
         assert s.dismissed_flag_keys() == set()
-        assert s.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "2"
+        assert s.separate_pairs() == set()
+        assert s.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == str(SCHEMA_VERSION)

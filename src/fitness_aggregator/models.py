@@ -45,6 +45,8 @@ class WorkoutSet:
     # changed fields, and the ids of the corrections that changed them.
     corrected_from: dict | None = field(default=None, compare=False)
     correction_ids: tuple[int, ...] = field(default=(), compare=False)
+    # The weight before an exercise-merge offset or factor was applied.
+    pre_merge_weight: float | None = field(default=None, compare=False)
 
     @property
     def volume(self) -> float:
@@ -58,6 +60,11 @@ class ExerciseEntry:
 
     name: str
     sets: list[WorkoutSet] = field(default_factory=list)
+    # Set only on views where this entry was combined into another exercise:
+    # the name it was recorded under, how weights were adjusted, and the correction id.
+    merged_from: str | None = field(default=None, compare=False)
+    merge_label: str = field(default="", compare=False)
+    merge_correction_id: int | None = field(default=None, compare=False)
 
 
 @dataclass

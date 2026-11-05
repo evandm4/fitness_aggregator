@@ -29,6 +29,7 @@ from datetime import datetime
 WORKOUT_MERGE = "workout_merge"
 DURATION_SUSPECT = "duration_suspect"
 VALUE_FIX = "value_fix"
+EXERCISE_MERGE = "exercise_merge"
 
 # Sources
 AUTO = "auto"

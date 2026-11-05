@@ -4,7 +4,7 @@ A command-line tool for importing, analyzing, and graphing weightlifting logs (S
 
 ## Status
 
-Milestones 1–3 are done: parsing Strong exports, SQLite storage, merging nearby workouts, the corrections log, per-lift history, PRs, training stats, and data-entry checks. See [PLAN.md](PLAN.md) §8 for what comes next.
+Milestones 1–4 are done: parsing Strong exports, SQLite storage, merging nearby workouts, the corrections log, per-lift history, PRs, training stats, data-entry checks, and combining similar exercises with weight offsets. See [PLAN.md](PLAN.md) §8 for what comes next.
 
 ## Usage
 
@@ -24,6 +24,11 @@ fitness stats                        # frequency, streaks, weekly volume (--by m
 fitness exercises                    # everything you've logged (--sort recent, --search curl)
 fitness check                        # review likely data-entry errors: swap, edit, or dismiss
 fitness fix 2026-06-04T13:53 "preacher curl" --set 1 --swap-weight-reps
+
+fitness merge review                 # similar exercises: combine (with a suggested offset) or keep separate
+fitness merge list                   # what's combined and what's kept separate
+fitness merge add "hip abductor 2" --into "hip abductor (machine)" --offset -50
+fitness merge undo "hip abductor 2"
 fitness config show
 fitness config set merge_gap_minutes 45
 ```
