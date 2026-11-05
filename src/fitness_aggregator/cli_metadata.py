@@ -9,7 +9,6 @@ from __future__ import annotations
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 import typer
@@ -31,13 +30,13 @@ def muscles_label(catalog: Catalog, exercise: str) -> str:
     """Primary muscles, compact. Guesses end in ``?``; ``—`` when nothing is known."""
     primary, _ = catalog.muscles(exercise)
     if catalog.has_mapping(exercise):
-        return ", ".join(primary) if primary else "[dim]none[/dim]"
+        return escape(", ".join(primary)) if primary else "[dim]none[/dim]"
     if primary:
-        return f"[italic]{', '.join(primary)}?[/italic]"
+        return f"[italic]{escape(', '.join(primary))}?[/italic]"
     return "[dim]—[/dim]"
 
 
-def print_unmapped(console: Console, df: pd.DataFrame, catalog: Catalog, search: Optional[str] = None) -> None:
+def print_unmapped(console: Console, df: pd.DataFrame, catalog: Catalog, search: str | None = None) -> None:
     names = sorted(set(df["exercise"]))
     if search:
         names = [n for n in names if search.lower() in n.lower()]
@@ -81,9 +80,9 @@ def _print_catalog_warnings(console: Console, catalog: Catalog) -> None:
 def muscles(
     ctx: typer.Context,
     by: str = typer.Option("week", "--by", help="week or month."),
-    last: int = typer.Option(8, "--last", "-n", help="Show the most recent N periods."),
+    last: int = typer.Option(8, "--last", "-n", min=0, help="Show the most recent N periods (0 for all)."),
     all_: bool = typer.Option(False, "--all", help="Show every period."),
-    since: Optional[str] = typer.Option(None, "--since", help="Only sessions on or after this date."),
+    since: str | None = typer.Option(None, "--since", help="Only sessions on or after this date."),
     raw: bool = typer.Option(False, "--raw", help=RAW_HELP),
 ):
     """Hard sets per muscle group per week (or month), against a 10-20 sets/week target."""
@@ -142,7 +141,7 @@ def muscles(
             cells.append(text)
         avg_over = complete or periods
         avg = row[avg_over].mean()
-        table.add_row(muscle.replace("_", " "), *cells, f"{avg:.1f}")
+        table.add_row(escape(muscle.replace("_", " ")), *cells, f"{avg:.1f}")
     console.print(table)
 
     unit = "a week" if by == "week" else "a week (scaled to each month's length)"
@@ -251,13 +250,14 @@ def import_health(
         f"[bold]Imported.[/bold] {_plural(len(plan.incoming), 'day')} of bodyweight stored "
         f"({plan.incoming[0].day} → {latest.day}, latest {_lb1(latest.lb)})."
     )
-    console.print("Assisted-lift loads now use these entries instead of the placeholder. See [bold]fitness bodyweight[/bold].")
+    console.print("Assisted-lift loads now use these entries instead of the placeholder. "
+                  "See [bold]fitness bodyweight[/bold].")
 
 
 @app.command()
 def bodyweight(
     ctx: typer.Context,
-    last: int = typer.Option(14, "--last", "-n", help="Show the most recent N entries (0 for all)."),
+    last: int = typer.Option(14, "--last", "-n", min=0, help="Show the most recent N entries (0 for all)."),
 ):
     """Logged bodyweight (from Apple Health), and whether the placeholder is still in use."""
     state = _state(ctx)

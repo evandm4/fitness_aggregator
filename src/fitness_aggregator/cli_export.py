@@ -155,7 +155,7 @@ def export_cmd(
         raise typer.BadParameter(f"choose csv or json, got {fmt!r}", param_hint="--format")
     _check_formula(err, formula)
     start = _parse_date(since) if since else None
-    end = _parse_date(until) if until else None
+    end = _parse_date(until, "--until") if until else None
     store = state.store
 
     if what == "corrections":

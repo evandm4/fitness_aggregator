@@ -15,7 +15,7 @@ import re
 import sys
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import pandas as pd
 import typer
@@ -26,7 +26,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from matplotlib.figure import Figure
 
 plot_app = typer.Typer(
-    help="Draw charts: progress, volume, calendar, duration, frequency, rep PRs, dashboard. "
+    help="Draw charts: progress, volume, calendar, duration, frequency, rep PRs, sets per muscle, dashboard. "
          "Saves a PNG to ./plots/ by default.",
     no_args_is_help=True,
 )
@@ -49,7 +49,7 @@ def default_path(name: str) -> Path:
     return PLOT_DIR / f"{name}_{date.today():%Y-%m-%d}.png"
 
 
-def save_figure(fig: "Figure", path: Path) -> Path:
+def save_figure(fig: Figure, path: Path) -> Path:
     """Save with the Agg canvas (vector formats pick their own canvas)."""
     from matplotlib.backends.backend_agg import FigureCanvasAgg
 
@@ -66,7 +66,7 @@ def _has_display() -> bool:
     return True
 
 
-def _show(console: Console, fig: "Figure") -> None:
+def _show(console: Console, fig: Figure) -> None:
     from .cli import _fail
 
     if not _has_display():
@@ -89,13 +89,17 @@ def _show(console: Console, fig: "Figure") -> None:
         _fail(console, f"couldn't open a window: {escape(str(exc))}. Leave out --show to save a PNG instead.")
 
 
-def _output(console: Console, fig: "Figure", name: str, out: Optional[Path], show: bool) -> None:
+def _output(console: Console, fig: Figure, name: str, out: Path | None, show: bool) -> None:
     from .cli import _fail
 
     if out is not None and out.suffix.lower() not in FORMATS:
         _fail(console, f"--out must end in {', '.join(FORMATS)}; got {escape(str(out))}.")
     if out is not None or not show:
-        path = save_figure(fig, out or default_path(name))
+        path = out or default_path(name)
+        try:
+            path = save_figure(fig, path)
+        except OSError as exc:
+            _fail(console, f"can't write {escape(str(path))}: {escape(exc.strerror or str(exc))}")
         console.print(f"Saved {escape(str(path))}")
     if show:
         _show(console, fig)
@@ -139,15 +143,11 @@ def footnotes(a, df: pd.DataFrame, *, sessions: bool = False, loads: bool = True
     return notes
 
 
-def _since(console, df: pd.DataFrame, column: str, since: Optional[str]) -> pd.DataFrame:
-    from .cli import _fail, _filter_dates
+def _since(console, df: pd.DataFrame, column: str, since: str | None) -> pd.DataFrame:
+    """Rows on or after ``since``; a bad date is a usage error (from ``cli._parse_date``)."""
+    from .cli import _filter_dates
 
-    if not since:
-        return df
-    try:
-        return _filter_dates(df, column, since, None)
-    except ValueError:
-        _fail(console, f"--since expects a date like 2026-09-01; got {escape(since)!r}.")
+    return _filter_dates(df, column, since, None) if since else df
 
 
 def _console(ctx: typer.Context) -> Console:
@@ -169,24 +169,25 @@ def _setup(ctx: typer.Context, raw: bool, include_warmups: bool = False):
 def progress(
     ctx: typer.Context,
     exercises: list[str] = typer.Argument(..., help="One or more exercises (a unique part of the name works)."),
-    metric: Optional[str] = typer.Option(None, "--metric", help="e1rm, top, volume, reps, seconds, or assistance "
-                                         "(default: e1rm; seconds for holds, reps for bodyweight, assistance for assisted)."),
+    metric: str | None = typer.Option(None, "--metric", help="e1rm, top, volume, reps, seconds, or assistance "
+                                      "(default: e1rm; seconds for holds, reps for bodyweight, "
+                                      "assistance for assisted)."),
     trend: bool = typer.Option(False, "--trend", help="Add a 30-day rolling average."),
     split: bool = typer.Option(False, "--split", help="One panel per exercise instead of overlaying them."),
-    since: Optional[str] = typer.Option(None, "--since", help=SINCE_HELP),
+    since: str | None = typer.Option(None, "--since", help=SINCE_HELP),
     formula: str = typer.Option("epley", "--formula", help="e1RM formula: epley or brzycki."),
     raw: bool = typer.Option(False, "--raw", help="Ignore corrections (no merging, no set fixes)."),
-    out: Optional[Path] = typer.Option(None, "--out", help=OUT_HELP),
+    out: Path | None = typer.Option(None, "--out", help=OUT_HELP),
     show: bool = typer.Option(False, "--show", help=SHOW_HELP),
 ):
     """Progress over time for one or more exercises, PRs starred."""
     from . import metrics, plots
-    from .cli import _check_formula, _fail, _parse_date, _resolve_exercise
+    from .cli import _check_formula, _fail, _parse_date, _resolve_exercise, esc
 
     state, console, a = _setup(ctx, raw)
     _check_formula(console, formula)
     if metric is not None and metric not in plots.METRICS:
-        _fail(console, f"unknown metric {metric!r}; use {', '.join(plots.METRICS)}.")
+        _fail(console, f"unknown metric {esc(repr(metric))}; use {', '.join(plots.METRICS)}.")
     if since:
         _parse_date(since)
     merged = {} if raw else state.store.active_merges()
@@ -210,10 +211,10 @@ def volume(
     ctx: typer.Context,
     by: str = typer.Option("week", "--by", help="week or month."),
     group: str = typer.Option("workout", "--group", help="workout (stack by workout name) or none."),
-    since: Optional[str] = typer.Option(None, "--since", help=SINCE_HELP),
+    since: str | None = typer.Option(None, "--since", help=SINCE_HELP),
     include_warmups: bool = typer.Option(False, "--include-warmups", help="Count warm-up sets too."),
     raw: bool = typer.Option(False, "--raw", help="Ignore corrections."),
-    out: Optional[Path] = typer.Option(None, "--out", help=OUT_HELP),
+    out: Path | None = typer.Option(None, "--out", help=OUT_HELP),
     show: bool = typer.Option(False, "--show", help=SHOW_HELP),
 ):
     """Weekly or monthly training volume, optionally stacked by workout."""
@@ -236,10 +237,10 @@ def volume(
 @plot_app.command()
 def calendar(
     ctx: typer.Context,
-    since: Optional[str] = typer.Option(None, "--since", help=SINCE_HELP),
-    weeks: Optional[int] = typer.Option(None, "--weeks", help="Show at most this many recent weeks (default 53)."),
+    since: str | None = typer.Option(None, "--since", help=SINCE_HELP),
+    weeks: int | None = typer.Option(None, "--weeks", min=1, help="Show at most this many recent weeks (default 53)."),
     raw: bool = typer.Option(False, "--raw", help="Ignore corrections."),
-    out: Optional[Path] = typer.Option(None, "--out", help=OUT_HELP),
+    out: Path | None = typer.Option(None, "--out", help=OUT_HELP),
     show: bool = typer.Option(False, "--show", help=SHOW_HELP),
 ):
     """GitHub-style heatmap of training days, coloured by volume."""
@@ -255,9 +256,9 @@ def calendar(
 @plot_app.command()
 def duration(
     ctx: typer.Context,
-    since: Optional[str] = typer.Option(None, "--since", help=SINCE_HELP),
+    since: str | None = typer.Option(None, "--since", help=SINCE_HELP),
     raw: bool = typer.Option(False, "--raw", help="Ignore corrections (durations are then all trusted)."),
-    out: Optional[Path] = typer.Option(None, "--out", help=OUT_HELP),
+    out: Path | None = typer.Option(None, "--out", help=OUT_HELP),
     show: bool = typer.Option(False, "--show", help=SHOW_HELP),
 ):
     """Session duration over time (untrusted durations left out)."""
@@ -276,9 +277,9 @@ def duration(
 def frequency(
     ctx: typer.Context,
     top: int = typer.Option(20, "--top", help="How many exercises to show."),
-    since: Optional[str] = typer.Option(None, "--since", help=SINCE_HELP),
+    since: str | None = typer.Option(None, "--since", help=SINCE_HELP),
     raw: bool = typer.Option(False, "--raw", help="Ignore corrections."),
-    out: Optional[Path] = typer.Option(None, "--out", help=OUT_HELP),
+    out: Path | None = typer.Option(None, "--out", help=OUT_HELP),
     show: bool = typer.Option(False, "--show", help=SHOW_HELP),
 ):
     """Sessions per exercise, most-done first; lifts not done lately are greyed."""
@@ -299,7 +300,7 @@ def rep_prs(
     ctx: typer.Context,
     exercise: str = typer.Argument(..., help="Exercise name (or a unique part of it)."),
     raw: bool = typer.Option(False, "--raw", help="Ignore corrections."),
-    out: Optional[Path] = typer.Option(None, "--out", help=OUT_HELP),
+    out: Path | None = typer.Option(None, "--out", help=OUT_HELP),
     show: bool = typer.Option(False, "--show", help=SHOW_HELP),
 ):
     """Best load at each rep count 1–15, now vs. 30 days before your latest session."""
@@ -320,7 +321,7 @@ def dashboard(
     ctx: typer.Context,
     formula: str = typer.Option("epley", "--formula", help="e1RM formula: epley or brzycki."),
     raw: bool = typer.Option(False, "--raw", help="Ignore corrections."),
-    out: Optional[Path] = typer.Option(None, "--out", help=OUT_HELP),
+    out: Path | None = typer.Option(None, "--out", help=OUT_HELP),
     show: bool = typer.Option(False, "--show", help=SHOW_HELP),
 ):
     """One-glance summary: headline numbers, calendar, volume, duration, top lifts, frequency."""
@@ -333,6 +334,94 @@ def dashboard(
     fig = plots.plot_dashboard(a.df, sessions, metrics.pr_events(a.df, formula), formula=formula,
                                footnotes=footnotes(a, a.df, sessions=True))
     _output(console, fig, "dashboard", out, show)
+
+
+def parse_target(text: str) -> tuple[float, float] | None:
+    """'10-20' → (10.0, 20.0); 'none' or 'off' → None. Raises ValueError otherwise."""
+    t = text.strip().lower().replace("–", "-").replace(" ", "")
+    if t in ("none", "off", "no"):
+        return None
+    lo, sep, hi = t.partition("-")
+    if not sep:
+        raise ValueError(text)
+    low, high = float(lo), float(hi)
+    if not (0 <= low < high) or high == float("inf"):
+        raise ValueError(text)
+    return low, high
+
+
+def _muscle_names(console: Console, queries: list[str], present) -> list[str]:
+    """Catalog muscle names for ``--muscle`` values ('front delts', 'Front_Delts' and 'front-delts' all work)."""
+    from .catalog import MUSCLES
+    from .cli import _fail, esc
+
+    known = list(MUSCLES) + sorted(set(present) - set(MUSCLES))
+    out = []
+    for q in queries:
+        key = q.strip().lower().replace(" ", "_").replace("-", "_")
+        matches = [m for m in known if m == key] or [m for m in known if key and key in m]
+        if len(matches) != 1:
+            what = "matches several muscles" if matches else "isn't a muscle group"
+            _fail(console, f"{esc(repr(q))} {what}; use one of: {esc(', '.join(m.replace('_', ' ') for m in known))}.")
+        out.append(matches[0])
+    return list(dict.fromkeys(out))
+
+
+@plot_app.command("sets-per-muscle")
+def sets_per_muscle(
+    ctx: typer.Context,
+    by: str = typer.Option("week", "--by", help="week or month (month shows the average sets per week)."),
+    since: str | None = typer.Option(None, "--since", help=SINCE_HELP),
+    muscle: list[str] = typer.Option([], "--muscle", "-m",
+                                     help="Only this muscle group, e.g. chest or 'front delts'. Repeatable."),
+    heatmap: bool = typer.Option(False, "--heatmap", help="A muscle × week grid instead of lines."),
+    target: str = typer.Option("10-20", "--target", help="Sets per week to shade as the target, or 'none'."),
+    raw: bool = typer.Option(False, "--raw", help="Ignore corrections."),
+    out: Path | None = typer.Option(None, "--out", help=OUT_HELP),
+    show: bool = typer.Option(False, "--show", help=SHOW_HELP),
+):
+    """Hard sets per muscle group per week, against a 10–20 sets/week target (see fitness muscles)."""
+    from . import metrics, plots
+    from .cli import _fail, esc
+
+    console = _console(ctx)
+    if by not in ("week", "month"):
+        _fail(console, "--by must be week or month.")
+    try:
+        band = parse_target(target)
+    except ValueError:
+        _fail(console, f"--target expects a range like 10-20 (or none); got {esc(repr(target))}.")
+    state, console, a = _setup(ctx, raw)
+    catalog = state.store.catalog()
+    df = _since(console, a.df, "session", since)
+    wms = metrics.weekly_muscle_sets(df, catalog, by)
+    names = _muscle_names(console, muscle, wms["muscle"].unique()) if muscle else None
+
+    notes = []
+    today = pd.Timestamp.now()
+    if not wms.empty:
+        latest = wms["period"].max()
+        if latest.start_time <= today <= latest.end_time:
+            wms = wms[wms["period"] != latest]  # a partial period would look like a drop-off
+            notes.append(f"This {by} is still in progress and left out.")
+    if by == "month" and not wms.empty:
+        weeks = wms["period"].map(lambda p: p.days_in_month / 7)
+        wms = wms.assign(sets=wms["sets"] / weeks.astype(float))
+    hard = df[df["set_type"].isin(metrics.HARD_SET_TYPES)] if not df.empty else df
+    guessed = sorted(n for n in set(hard["exercise"]) if catalog.is_guessed(n)) if not hard.empty else []
+    if guessed:
+        notes.append(f"Muscles for {_plural(len(guessed), 'exercise')} are keyword guesses; "
+                     "see fitness exercises --unmapped.")
+    notes.append("Hard sets (normal, failure, drop): 1 per primary muscle, 0.5 per secondary.")
+    notes += footnotes(a, df, loads=False)
+
+    pretty = wms.assign(muscle=wms["muscle"].str.replace("_", " "))
+    title = "Sets per muscle per week" if by == "week" else "Average weekly sets per muscle, by month"
+    fig = plots.plot_sets_per_muscle(
+        pretty, kind="heatmap" if heatmap else "lines", target=band,
+        muscles=[n.replace("_", " ") for n in names] if names else None, title=title, footnotes=notes,
+    )
+    _output(console, fig, f"sets-per-muscle-{by}", out, show)
 
 
 # --- used by `fitness merge review` ------------------------------------------------

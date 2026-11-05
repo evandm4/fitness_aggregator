@@ -2,36 +2,56 @@
 
 from __future__ import annotations
 
+import math
+import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
+import pandas as pd
 import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
+from typer.core import TyperGroup
 
-import math
-
-import pandas as pd
-
+from . import __version__, merges, metrics, outliers, similarity
 from . import corrections as corr
-from . import merges, metrics, outliers, similarity
 from . import settings as settings_mod
 from .bodyweight import Bodyweight
 from .catalog import ASSISTED, LOADED, TIMED, UNLOADED
 from .corrections import Correction, ReconcileResult, format_duration
 from .fixes import describe_set
 from .importers import StrongParseError, parse_strong_csv
-from .models import ExerciseEntry, SetType, Workout, WorkoutSet
+from .models import ExerciseEntry, SetType, WorkoutSet
 from .sessions import Session, workout_key
-from .settings import Settings
-from .store import ImportPlan, Store, default_db_path
+from .settings import Settings, SettingsError
+from .store import ImportPlan, Store, StoreError, default_db_path
+
+
+class _FriendlyErrors(TyperGroup):
+    """Turn database and settings errors raised anywhere in a command into one ``Error:`` line.
+
+    ``State.store`` and ``State.settings`` already catch errors when opening; this catches the
+    rest (a write to a read-only database, a page of a damaged one that only fails when read).
+    """
+
+    def invoke(self, ctx):
+        try:
+            return super().invoke(ctx)
+        except (StoreError, SettingsError, sqlite3.DatabaseError) as exc:
+            state = ctx.obj if isinstance(ctx.obj, State) else None
+            console = state.console if state else Console(highlight=False)
+            message = str(exc)
+            if isinstance(exc, sqlite3.DatabaseError) and state:
+                message = f"database {state.db_path}: {message}"
+            _fail(console, esc(message))
+
 
 app = typer.Typer(
+    cls=_FriendlyErrors,
     help="Track weightlifting statistics from Strong app exports.",
     no_args_is_help=True,
     add_completion=False,
@@ -61,21 +81,27 @@ SET_LABELS = {SetType.WARMUP: "W", SetType.DROP: "D", SetType.FAILURE: "F"}
 @dataclass
 class State:
     db_path: Path
-    config_path: Optional[Path]
+    config_path: Path | None
     console: Console
-    _store: Optional[Store] = None
-    _settings: Optional[Settings] = None
+    _store: Store | None = None
+    _settings: Settings | None = None
 
     @property
     def store(self) -> Store:
         if self._store is None:
-            self._store = Store(self.db_path)
+            try:
+                self._store = Store(self.db_path)
+            except StoreError as exc:
+                _fail(self.console, esc(exc))
         return self._store
 
     @property
     def settings(self) -> Settings:
         if self._settings is None:
-            self._settings = settings_mod.load(self.config_path)
+            try:
+                self._settings = settings_mod.load(self.config_path)
+            except SettingsError as exc:
+                _fail(self.console, esc(exc))
         return self._settings
 
 
@@ -84,19 +110,47 @@ def _state(ctx: typer.Context) -> State:
 
 
 def _fail(console: Console, message: str, code: int = 1):
+    """Print one error line and exit. ``message`` is Rich markup: wrap user data in ``esc()``."""
+    message = message.rstrip()
+    if not message.endswith((".", "!", "?", "…")):
+        message += "."  # errors from lower layers come without a full stop
     console.print(f"[red]Error:[/red] {message}")
     raise typer.Exit(code)
+
+
+def _require_workouts(state: State) -> None:
+    """Fail early, with the same hint as the read-only commands, when nothing is imported yet."""
+    if not state.store.workout_count():
+        _fail(state.console, "no workouts yet. Run [bold]fitness import FILE[/bold] first.")
+
+
+def esc(value) -> str:
+    """User data (exercise and workout names, notes, reasons, paths) for a Rich markup string.
+
+    Strong lets you type anything, so a name like ``Curl [/x]`` would otherwise be parsed as
+    markup: it crashes Rich, and ``[green]`` silently disappears.
+    """
+    return escape(str(value))
+
+
+def _print_version(value: bool) -> None:
+    if value:
+        typer.echo(f"fitness_aggregator {__version__}")
+        raise typer.Exit()
 
 
 @app.callback()
 def main(
     ctx: typer.Context,
-    db: Optional[Path] = typer.Option(
+    db: Path | None = typer.Option(
         None, "--db", help="Database file (default: $FITNESS_AGGREGATOR_DB, else ~/.fitness_aggregator/lifts.db)."
     ),
-    config: Optional[Path] = typer.Option(
-        None, "--config", help="Settings file (default: $FITNESS_AGGREGATOR_CONFIG, else ./config/settings.toml if present, else ~/.fitness_aggregator/settings.toml)."
+    config: Path | None = typer.Option(
+        None, "--config", help="Settings file (default: $FITNESS_AGGREGATOR_CONFIG, else "
+        "./config/settings.toml if present, else ~/.fitness_aggregator/settings.toml)."
     ),
+    version: bool = typer.Option(False, "--version", callback=_print_version, is_eager=True,
+                                 help="Show the version and exit."),
 ):
     ctx.obj = State(db_path=db or default_db_path(), config_path=config, console=Console(highlight=False))
     ctx.call_on_close(lambda: ctx.obj._store and ctx.obj._store.close())
@@ -128,21 +182,22 @@ def _correction_counts(corrections: list[Correction]) -> str:
 def _print_reconcile(console: Console, result: ReconcileResult, store: Store) -> None:
     ids = {c.key: c.id for c in store.corrections()}
     for p in result.insert:
-        console.print(f"  [green]+[/green] #{ids.get(p.key, '?')} {p.reason}")
+        console.print(f"  [green]+[/green] #{ids.get(p.key, '?')} {esc(p.reason)}")
     for current, p in result.reactivate:
-        console.print(f"  [green]↺[/green] #{current.id} applies again: {p.reason}")
+        console.print(f"  [green]↺[/green] #{current.id} applies again: {esc(p.reason)}")
     for current, p in result.update:
         note = " (still reverted)" if current.status == corr.REVERTED else ""
-        console.print(f"  [yellow]~[/yellow] #{current.id} updated{note}: {p.reason}")
+        console.print(f"  [yellow]~[/yellow] #{current.id} updated{note}: {esc(p.reason)}")
     for current in result.obsolete:
-        console.print(f"  [dim]-[/dim] #{current.id} no longer applies: {current.reason}")
+        console.print(f"  [dim]-[/dim] #{current.id} no longer applies: {esc(current.reason)}")
     for current in result.stale:
         console.print(
             f"  [red]![/red] #{current.id} is stale (the imported data changed, so it's no longer applied): "
-            f"{current.reason}"
+            f"{esc(current.reason)}"
         )
     for current in result.unstale:
-        console.print(f"  [green]↺[/green] #{current.id} matches the data again and is applied: {current.reason}")
+        console.print(f"  [green]↺[/green] #{current.id} matches the data again and is applied: "
+                      f"{esc(current.reason)}")
 
 
 def _print_parse_summary(console: Console, plan: ImportPlan) -> None:
@@ -159,7 +214,7 @@ def _print_parse_summary(console: Console, plan: ImportPlan) -> None:
         rest += f", {s.rest_timers_orphaned:,} ignored (no preceding set)"
     console.print(rest + ".")
     for w in plan.result.warnings:
-        console.print(f"  [yellow]warning:[/yellow] {w}")
+        console.print(f"  [yellow]warning:[/yellow] {esc(w)}")
 
 
 def _set_row(s: WorkoutSet, show_rpe: bool) -> list[str]:
@@ -178,7 +233,7 @@ def _set_row(s: WorkoutSet, show_rpe: bool) -> list[str]:
     row = [label, weight, amount, format_duration_seconds(s.rest_seconds)]
     if show_rpe:
         row.append("" if s.rpe is None else f"RPE {_num(s.rpe)}")
-    row.append(notes)
+    row.append(esc(notes))
     return row
 
 
@@ -219,7 +274,7 @@ def import_cmd(
     try:
         result = parse_strong_csv(file)
     except StrongParseError as exc:
-        _fail(console, f"{file}: {exc}")
+        _fail(console, f"{esc(file)}: {esc(exc)}")
 
     store = state.store
     plan = store.plan_import(result, file)
@@ -247,11 +302,12 @@ def import_cmd(
             f"{len(plan.removed)} removed, {plan.unchanged:,} unchanged."
         )
         for w in plan.new:
-            console.print(f"  [green]new[/green]     {_when(w.started_at)}  {w.name}")
+            console.print(f"  [green]new[/green]     {_when(w.started_at)}  {esc(w.name)}")
         for e in plan.edited:
-            console.print(f"  [yellow]edited[/yellow]  {_when(e.new.started_at)}  {e.new.name}: {e.description}")
+            console.print(f"  [yellow]edited[/yellow]  {_when(e.new.started_at)}  {esc(e.new.name)}: "
+                          f"{esc(e.description)}")
         for w in plan.removed:
-            console.print(f"  [red]removed[/red] {_when(w.started_at)}  {w.name} (deleted in Strong?)")
+            console.print(f"  [red]removed[/red] {_when(w.started_at)}  {esc(w.name)} (deleted in Strong?)")
 
     if plan.removed and not yes:
         if not typer.confirm(
@@ -289,19 +345,19 @@ def _print_flag_count(console: Console, store: Store) -> None:
 
 # --- workouts ---------------------------------------------------------------
 
-def _parse_date(value: str) -> datetime:
+def _parse_date(value: str, option: str = "--since") -> datetime:
     try:
-        return datetime.fromisoformat(value)
+        return datetime.fromisoformat(value.strip())
     except ValueError:
-        raise typer.BadParameter(f"expected a date like 2026-06-02, got {value!r}") from None
+        raise typer.BadParameter(f"expected a date like 2026-06-02, got {value!r}", param_hint=option) from None
 
 
 @workouts_app.callback(invoke_without_command=True)
 def workouts_list(
     ctx: typer.Context,
-    last: int = typer.Option(20, "--last", "-n", help="Show the most recent N sessions."),
+    last: int = typer.Option(20, "--last", "-n", min=0, help="Show the most recent N sessions (0 for all)."),
     all_: bool = typer.Option(False, "--all", help="Show every session."),
-    since: Optional[str] = typer.Option(None, "--since", help="Only sessions on or after this date."),
+    since: str | None = typer.Option(None, "--since", help="Only sessions on or after this date."),
     raw: bool = typer.Option(False, "--raw", help="Ignore corrections (no merging, recorded durations)."),
 ):
     """List sessions, most recent last."""
@@ -330,7 +386,7 @@ def workouts_list(
         if any(c.type == corr.DURATION_SUSPECT for c in s.applied):
             flags.append("duration excluded")
         table.add_row(
-            _when(s.started_at), s.name, _session_duration(s), str(len(s.exercises)),
+            _when(s.started_at), esc(s.name), _session_duration(s), str(len(s.exercises)),
             str(s.set_count), "[dim]" + ", ".join(flags) + "[/dim]" if flags else "",
         )
     state.console.print(table)
@@ -360,10 +416,11 @@ def workouts_unmerge(
         if c.workout.startswith(text)
     ]
     if not candidates:
-        _fail(state.console, f"no active workout merge for a workout starting {when!r}. "
+        _fail(state.console, f"no active workout merge for a workout starting {esc(repr(when))}. "
               "See [bold]fitness corrections --type workout_merge[/bold].")
     if len(candidates) > 1:
-        _fail(state.console, f"{when!r} matches several merges ({', '.join(c.workout for c in candidates)}); be more specific.")
+        _fail(state.console, f"{esc(repr(when))} matches several merges "
+              f"({esc(', '.join(c.workout for c in candidates))}); be more specific.")
     _revert_or_restore(state, candidates[0].id, corr.REVERTED)
 
 
@@ -384,7 +441,7 @@ def show(
         return
     matches = _match_sessions(sessions, when)
     if not matches:
-        _fail(console, f"no session matches {when!r}.")
+        _fail(console, f"no session matches {esc(repr(when))}. See [bold]fitness workouts[/bold].")
 
     merge_corrections = {} if raw else {
         c.id: c for c in state.store.corrections(type_=corr.EXERCISE_MERGE, statuses=[corr.ACTIVE])}
@@ -404,9 +461,9 @@ def _print_session(console: Console, session: Session, merge_corrections: dict[i
         header.append(f"  ·  {len(session.members)} workouts merged", style="yellow")
     console.print(header)
     if session.notes:
-        console.print(f"[italic]{session.notes}[/italic]")
+        console.print(f"[italic]{esc(session.notes)}[/italic]")
 
-    for m_index, member in enumerate(session.members):
+    for member in session.members:
         if session.is_merged:
             console.print(f"[dim]── {member.started_at:%H:%M} workout ({format_duration(member.duration)}) ──[/dim]")
         for entry in member.exercises:
@@ -421,10 +478,10 @@ def _print_session(console: Console, session: Session, merge_corrections: dict[i
             table.add_column(style="italic")
             for s in entry.sets:
                 table.add_row(*_set_row(s, show_rpe))
-            heading = f"\n[bold]{entry.name}[/bold]"
+            heading = f"\n[bold]{esc(entry.name)}[/bold]"
             if entry.merged_from:
                 adjusted = f", {entry.merge_label}" if entry.merge_label else ""
-                heading += f"  [dim](recorded as {entry.merged_from}{adjusted})[/dim]"
+                heading += f"  [dim](recorded as {esc(entry.merged_from + adjusted)})[/dim]"
             console.print(heading)
             console.print(table)
 
@@ -434,7 +491,7 @@ def _print_session(console: Console, session: Session, merge_corrections: dict[i
     if applied:
         console.print("\n[yellow]Corrections applied:[/yellow]")
         for c in applied:
-            console.print(f"  #{c.id} {c.reason}")
+            console.print(f"  #{c.id} {esc(c.reason)}")
 
 
 # --- corrections ------------------------------------------------------------
@@ -442,12 +499,12 @@ def _print_session(console: Console, session: Session, merge_corrections: dict[i
 @corrections_app.callback(invoke_without_command=True)
 def corrections_list(
     ctx: typer.Context,
-    type_: Optional[str] = typer.Option(None, "--type", help="Only this type, e.g. workout_merge."),
+    type_: str | None = typer.Option(None, "--type", help="Only this type, e.g. workout_merge."),
     auto: bool = typer.Option(False, "--auto", help="Only automatic corrections."),
     user: bool = typer.Option(False, "--user", help="Only corrections you made."),
-    status: Optional[str] = typer.Option(None, "--status", help="active, reverted, obsolete, or stale."),
-    exercise: Optional[str] = typer.Option(None, "--exercise", help="Only corrections affecting this exercise."),
-    since: Optional[str] = typer.Option(None, "--since", help="Only corrections created on or after this date."),
+    status: str | None = typer.Option(None, "--status", help="active, reverted, obsolete, or stale."),
+    exercise: str | None = typer.Option(None, "--exercise", help="Only corrections affecting this exercise."),
+    since: str | None = typer.Option(None, "--since", help="Only corrections created on or after this date."),
     all_: bool = typer.Option(False, "--all", help="Include obsolete corrections."),
 ):
     """List every correction applied on top of your raw data."""
@@ -458,7 +515,7 @@ def corrections_list(
     if auto and user:
         _fail(console, "use --auto or --user, not both.")
     if status and status not in corr.STATUSES:
-        _fail(console, f"unknown status {status!r}; use one of {', '.join(corr.STATUSES)}.")
+        _fail(console, f"unknown status {esc(repr(status))}; use one of {', '.join(corr.STATUSES)}.")
     statuses = [status] if status else (None if all_ else [corr.ACTIVE, corr.REVERTED, corr.STALE])
     items = state.store.corrections(
         type_=type_,
@@ -478,7 +535,7 @@ def corrections_list(
     status_style = {corr.ACTIVE: "green", corr.REVERTED: "yellow", corr.STALE: "red", corr.OBSOLETE: "dim"}
     for c in items:
         table.add_row(
-            str(c.id), c.type, c.source, f"[{status_style[c.status]}]{c.status}[/]", c.reason
+            str(c.id), esc(c.type), esc(c.source), f"[{status_style[c.status]}]{c.status}[/]", esc(c.reason)
         )
     console.print(table)
     console.print(f"[dim]{_plural(len(items), 'correction')}. Undo one with: fitness corrections revert ID[/dim]")
@@ -496,9 +553,9 @@ def _revert_or_restore(state: State, correction_id: int, status: str) -> None:
     try:
         updated, knock_on = store.set_correction_status(correction_id, status, state.settings)
     except ValueError as exc:
-        _fail(console, str(exc))
+        _fail(console, esc(exc))
     verb = "Reverted" if status == corr.REVERTED else "Restored"
-    console.print(f"{verb} #{updated.id}: {updated.reason}")
+    console.print(f"{verb} #{updated.id}: {esc(updated.reason)}")
     if knock_on.changed:
         console.print("Knock-on changes:")
         _print_reconcile(console, knock_on, store)
@@ -543,18 +600,22 @@ def _analysis(state: State, *, raw: bool = False, include_warmups: bool = False)
 
 def _check_formula(console: Console, formula: str) -> None:
     if formula not in metrics.FORMULAS:
-        _fail(console, f"unknown formula {formula!r}; use {' or '.join(metrics.FORMULAS)}.")
+        _fail(console, f"unknown formula {esc(repr(formula))}; use {' or '.join(metrics.FORMULAS)}.")
 
 
-def _resolve_exercise(console: Console, query: str, names, merged: dict | None = None) -> str:
-    """Match a name or a unique part of one. A name combined into another resolves to the kept name."""
+def _resolve_exercise(console: Console, query: str, names, merged: dict | None = None,
+                      where: str = "", hint: str = "See [bold]fitness exercises[/bold].") -> str:
+    """Match a name or a unique part of one. A name combined into another resolves to the kept name.
+
+    ``where`` (e.g. " in that workout") and ``hint`` (Rich markup) shape the no-match error.
+    """
     merged = merged or {}
     names = sorted(set(names) | set(merged))
     q = query.lower()
 
     def resolve(name: str) -> str:
         if name in merged:
-            console.print(f"[dim]{name} is combined into {merged[name].into}; showing that.[/dim]")
+            console.print(f"[dim]{esc(name)} is combined into {esc(merged[name].into)}; showing that.[/dim]")
             return merged[name].into
         return name
 
@@ -567,16 +628,17 @@ def _resolve_exercise(console: Console, query: str, names, merged: dict | None =
         sources = [n for n in partial if n in merged]
         return resolve(sources[0]) if sources and targets[0] not in partial else targets[0]
     if not partial:
-        _fail(console, f"no exercise matches {query!r}. See [bold]fitness exercises[/bold].")
+        _fail(console, f"no exercise{where} matches {esc(repr(query))}. {hint}")
     shown = ", ".join(targets[:8]) + (", …" if len(targets) > 8 else "")
-    _fail(console, f"{query!r} matches {len(targets)} exercises ({shown}); be more specific.")
+    _fail(console, f"{esc(repr(query))} matches {len(targets)} exercises ({esc(shown)}); be more specific.")
 
 
 def _bodyweight_note(console: Console, df: pd.DataFrame, bodyweight: Bodyweight) -> None:
     if not (df["kind"] == ASSISTED).any():
         return
     if not bodyweight.uses_placeholder:
-        console.print("[dim]Assisted-lift loads use your logged bodyweight (Apple Health). See fitness bodyweight[/dim]")
+        console.print("[dim]Assisted-lift loads use your logged bodyweight (Apple Health). "
+                      "See fitness bodyweight[/dim]")
     else:
         console.print(
             f"[dim]Assisted-lift loads use placeholder bodyweight {_num(bodyweight.placeholder_lb)} lb "
@@ -598,15 +660,15 @@ def _parse_window(console: Console, text: str) -> pd.Timedelta:
     text = text.strip().lower()
     units = {"d": 1, "w": 7, "m": 30, "y": 365}
     if len(text) < 2 or text[-1] not in units or not text[:-1].isdigit():
-        _fail(console, f"expected a window like 30d, 4w, or 3m; got {text!r}.")
+        _fail(console, f"expected a window like 30d, 4w, or 3m; got {esc(repr(text))}.")
     return pd.Timedelta(days=int(text[:-1]) * units[text[-1]])
 
 
-def _filter_dates(df: pd.DataFrame, column: str, since: Optional[str], until: Optional[str]) -> pd.DataFrame:
+def _filter_dates(df: pd.DataFrame, column: str, since: str | None, until: str | None) -> pd.DataFrame:
     if since:
         df = df[df[column] >= pd.Timestamp(_parse_date(since))]
     if until:
-        df = df[df[column] < pd.Timestamp(_parse_date(until)) + pd.Timedelta(days=1)]
+        df = df[df[column] < pd.Timestamp(_parse_date(until, "--until")) + pd.Timedelta(days=1)]
     return df
 
 
@@ -628,7 +690,7 @@ def _pr_value(pr_type: str, value) -> str:
 def history(
     ctx: typer.Context,
     exercise: str = typer.Argument(..., help="Exercise name (or a unique part of it)."),
-    since: Optional[str] = typer.Option(None, "--since", help="Only sessions on or after this date."),
+    since: str | None = typer.Option(None, "--since", help="Only sessions on or after this date."),
     formula: str = typer.Option("epley", "--formula", help=FORMULA_HELP),
     raw: bool = typer.Option(False, "--raw", help=RAW_HELP),
     include_warmups: bool = typer.Option(False, "--include-warmups", help=WARMUP_HELP),
@@ -646,7 +708,7 @@ def history(
     hist = _filter_dates(hist, "session", since, None)
     kind = hist["kind"].iloc[0] if not hist.empty else a.df.loc[a.df["exercise"] == name, "kind"].iloc[0]
 
-    console.print(f"[bold]{name}[/bold]  [dim]({kind})[/dim]")
+    console.print(f"[bold]{esc(name)}[/bold]  [dim]({kind})[/dim]")
     if hist.empty:
         console.print("No sessions in that range.")
         return
@@ -689,8 +751,10 @@ def history(
     footer = [f"{_plural(len(hist), 'session')}"]
     if kind not in (TIMED, UNLOADED) and hist["e1rm"].notna().any():
         best = hist.loc[hist["e1rm"].idxmax()]
-        footer.append(f"best e1RM {best['e1rm']:,.0f} lb ({_num(best['e1rm_load'])} × {_num(best['e1rm_reps'])}, {_date(best['session'])})")
-    console.print("[dim]" + "; ".join(footer) + f". e1RM: {formula.title()}, sets of 1–{metrics.E1RM_MAX_REPS} reps.[/dim]")
+        footer.append(f"best e1RM {best['e1rm']:,.0f} lb ({_num(best['e1rm_load'])} × {_num(best['e1rm_reps'])}, "
+                      f"{_date(best['session'])})")
+    console.print("[dim]" + "; ".join(footer)
+                  + f". e1RM: {formula.title()}, sets of 1–{metrics.E1RM_MAX_REPS} reps.[/dim]")
     _bodyweight_note(console, a.df[a.df["exercise"] == name], a.bodyweight)
     sources = {name} | {m.source for m in merged.values() if m.into == name}
     if hist["corrected"].any():
@@ -698,10 +762,15 @@ def history(
                      if c.target.get("exercise") in sources]
         console.print("[yellow]*[/yellow] [dim]includes corrected sets:[/dim]")
         for c in fixes_for:
-            console.print(f"  [dim]#{c.id} {c.reason}[/dim]")
+            console.print(f"  [dim]#{c.id} {esc(c.reason)}[/dim]")
     for m in sorted((m for m in merged.values() if m.into == name), key=lambda m: m.source):
         how = f", weights adjusted {m.label}" if m.label else ", weights as recorded"
-        console.print(f"[cyan]†[/cyan] [dim]recorded as {m.source}{how} (correction #{m.correction_id})[/dim]")
+        console.print(f"[cyan]†[/cyan] [dim]recorded as {esc(m.source)}{how} (correction #{m.correction_id})[/dim]")
+
+
+def _quote(name: str) -> str:
+    """A name as a shell argument in a hint: double quotes unless it holds a double quote."""
+    return f"'{name}'" if '"' in name else f'"{name}"'
 
 
 def _merge_math(label: str) -> str:
@@ -717,8 +786,8 @@ def _merge_math(label: str) -> str:
 @app.command()
 def prs(
     ctx: typer.Context,
-    exercise: Optional[str] = typer.Argument(None, help="Show rep maxes and PR timeline for one exercise."),
-    recent: Optional[str] = typer.Option(None, "--recent", help="PRs set within a window, e.g. 30d, 4w, 3m."),
+    exercise: str | None = typer.Argument(None, help="Show rep maxes and PR timeline for one exercise."),
+    recent: str | None = typer.Option(None, "--recent", help="PRs set within a window, e.g. 30d, 4w, 3m."),
     sort: str = typer.Option("name", "--sort", help="name, e1rm, or recent."),
     formula: str = typer.Option("epley", "--formula", help=FORMULA_HELP),
     raw: bool = typer.Option(False, "--raw", help=RAW_HELP),
@@ -741,13 +810,13 @@ def prs(
         cutoff = pd.Timestamp(datetime.now()) - window
         events = events[events["session"] >= cutoff]
         if events.empty:
-            console.print(f"No PRs in the last {recent} (most recent session: {_date(latest)}).")
+            console.print(f"No PRs in the last {esc(recent)} (most recent session: {_date(latest)}).")
             return
         table = Table(box=None, header_style="bold", pad_edge=False)
         for c in ("Date", "Exercise", "PR", "Set", "New", "Previous"):
             table.add_column(c, justify="right" if c in ("New", "Previous") else "left")
         for r in events.itertuples():
-            table.add_row(_date(r.session), r.exercise, PR_LABELS[r.pr_type], r.detail,
+            table.add_row(_date(r.session), esc(r.exercise), PR_LABELS[r.pr_type], esc(r.detail),
                           _pr_value(r.pr_type, r.value), _pr_value(r.pr_type, r.previous))
         console.print(table)
         console.print(f"[dim]{_plural(len(events), 'PR')} across {events['exercise'].nunique()} exercises "
@@ -767,23 +836,24 @@ def prs(
         table.add_column(c, justify="right" if c in ("Best e1RM", "Sessions") else "left")
     for r in bests.itertuples():
         if r.kind == TIMED:
-            table.add_row(r.exercise, "—", f"{r.max_seconds:g} s hold", "", "", "", str(r.sessions))
+            table.add_row(esc(r.exercise), "—", f"{r.max_seconds:g} s hold", "", "", "", str(r.sessions))
         elif r.kind == UNLOADED:
-            table.add_row(r.exercise, "—", f"{r.max_reps:g} reps", "", "", "", str(r.sessions))
+            table.add_row(esc(r.exercise), "—", f"{r.max_reps:g} reps", "", "", "", str(r.sessions))
         else:
             e1 = "—" if math.isnan(r.e1rm) else f"{r.e1rm:,.0f}"
-            table.add_row(r.exercise, e1, r.e1rm_set, _date(r.e1rm_date), r.heaviest_set,
+            table.add_row(esc(r.exercise), e1, esc(r.e1rm_set), _date(r.e1rm_date), esc(r.heaviest_set),
                           _date(r.heaviest_date), str(r.sessions))
     console.print(table)
     console.print(f"[dim]{_plural(len(bests), 'exercise')}. Loads in lb. e1RM: {formula.title()}, sets of "
-                  f"1–{metrics.E1RM_MAX_REPS} reps. Details: fitness prs EXERCISE. Recent: fitness prs --recent 30d[/dim]")
+                  f"1–{metrics.E1RM_MAX_REPS} reps. Details: fitness prs EXERCISE. "
+                  "Recent: fitness prs --recent 30d[/dim]")
     _bodyweight_note(console, a.df, a.bodyweight)
 
 
 def _prs_for_exercise(console: Console, a: Analysis, name: str, formula: str) -> None:
     d = a.df[a.df["exercise"] == name]
     kind = d["kind"].iloc[0]
-    console.print(f"[bold]{name}[/bold]  [dim]({kind})[/dim]")
+    console.print(f"[bold]{esc(name)}[/bold]  [dim]({kind})[/dim]")
     if kind not in (TIMED, UNLOADED):
         maxes = metrics.rep_maxes(d, name)
         if not maxes.empty:
@@ -804,7 +874,7 @@ def _prs_for_exercise(console: Console, a: Analysis, name: str, formula: str) ->
         for c in ("Date", "PR", "Set", "New", "Previous"):
             table.add_column(c, justify="right" if c in ("New", "Previous") else "left")
         for r in events.itertuples():
-            table.add_row(_date(r.session), PR_LABELS[r.pr_type], r.detail,
+            table.add_row(_date(r.session), PR_LABELS[r.pr_type], esc(r.detail),
                           _pr_value(r.pr_type, r.value), _pr_value(r.pr_type, r.previous))
         console.print(table)
         console.print(f"[dim]{_plural(len(events), 'PR')}; the first session is the baseline.[/dim]")
@@ -817,10 +887,10 @@ def _prs_for_exercise(console: Console, a: Analysis, name: str, formula: str) ->
 def stats(
     ctx: typer.Context,
     by: str = typer.Option("week", "--by", help="week or month."),
-    last: int = typer.Option(12, "--last", "-n", help="Show the most recent N periods."),
+    last: int = typer.Option(12, "--last", "-n", min=0, help="Show the most recent N periods (0 for all)."),
     all_: bool = typer.Option(False, "--all", help="Show every period."),
-    since: Optional[str] = typer.Option(None, "--since", help="Only sessions on or after this date."),
-    until: Optional[str] = typer.Option(None, "--until", help="Only sessions on or before this date."),
+    since: str | None = typer.Option(None, "--since", help="Only sessions on or after this date."),
+    until: str | None = typer.Option(None, "--until", help="Only sessions on or before this date."),
     raw: bool = typer.Option(False, "--raw", help=RAW_HELP),
     include_warmups: bool = typer.Option(False, "--include-warmups", help=WARMUP_HELP),
 ):
@@ -860,7 +930,8 @@ def stats(
     if not all_ and last > 0:
         periods = periods.tail(last)
     table = Table(box=None, header_style="bold", pad_edge=False)
-    for col in ("Week of" if by == "week" else "Month", "Sessions", "Time", "Avg", "Sets", "Reps", "Volume (lb)", "PRs"):
+    first_col = "Week of" if by == "week" else "Month"
+    for col in (first_col, "Sessions", "Time", "Avg", "Sets", "Reps", "Volume (lb)", "PRs"):
         table.add_column(col, justify="left" if col in ("Week of", "Month") else "right")
     for r in periods.itertuples():
         label = f"{r.period.start_time:%Y-%m-%d}" if by == "week" else f"{r.period.start_time:%b %Y}"
@@ -878,7 +949,7 @@ def stats(
     for col in ("Workout", "Sessions", "Per week", "Last"):
         table.add_column(col, justify="left" if col in ("Workout", "Last") else "right")
     for r in names.itertuples():
-        table.add_row(r.name, str(r.sessions), f"{r.per_week:.1f}", _date(r.last))
+        table.add_row(esc(r.name), str(r.sessions), f"{r.per_week:.1f}", _date(r.last))
     console.print(table)
 
     notes = ["Warm-ups " + ("included in" if include_warmups else "excluded from") + " sets and volume",
@@ -892,10 +963,11 @@ def stats(
 @app.command()
 def exercises(
     ctx: typer.Context,
-    search: Optional[str] = typer.Option(None, "--search", "-s", help="Only names containing this text."),
+    search: str | None = typer.Option(None, "--search", "-s", help="Only names containing this text."),
     sort: str = typer.Option("count", "--sort", help="count, recent, or name."),
     raw: bool = typer.Option(False, "--raw", help=RAW_HELP),
-    unmapped: bool = typer.Option(False, "--unmapped", help="List exercises with no muscle groups in config/exercises.toml."),
+    unmapped: bool = typer.Option(False, "--unmapped",
+                                  help="List exercises with no muscle groups in config/exercises.toml."),
 ):
     """Every exercise you've logged, with frequency, when you last did it, and muscles worked."""
     state = _state(ctx)
@@ -939,24 +1011,30 @@ def exercises(
         rest = "" if pd.isna(r.avg_rest) else format_duration_seconds(round(r.avg_rest))
         days = (now - pd.Timestamp(r.last).normalize()).days
         guessed += catalog.is_guessed(r.exercise)
-        table.add_row(r.exercise, "" if r.kind == "loaded" else r.kind, str(r.sessions), str(r.sets),
+        table.add_row(esc(r.exercise), "" if r.kind == "loaded" else r.kind, str(r.sessions), str(r.sets),
                       _date(r.first), _date(r.last), str(days), rest, best, muscles_label(catalog, r.exercise))
     console.print(table)
     console.print(f"[dim]{_plural(len(summary), 'exercise')}. Sets exclude warm-ups. Muscles are primary only.[/dim]")
     if guessed:
-        console.print(f"[dim]{_plural(guessed, 'exercise')} with guessed muscles (marked ?): fitness exercises --unmapped[/dim]")
+        console.print(f"[dim]{_plural(guessed, 'exercise')} with guessed muscles (marked ?): "
+                      "fitness exercises --unmapped[/dim]")
     merged = {} if raw else state.store.active_merges()
     shown = set(summary["exercise"])
     for m in sorted(merged.values(), key=lambda m: m.into):
         if m.into in shown:
             how = f" ({m.label})" if m.label else ""
-            console.print(f"[dim]{m.into} includes {m.source}{how}. See fitness merge list.[/dim]")
+            console.print(f"[dim]{esc(m.into)} includes {esc(m.source)}{how}. See fitness merge list.[/dim]")
     candidates = [] if raw else state.store.merge_candidates()
     if candidates:
-        console.print(f"[dim]{_plural(len(candidates), 'group')} of similar exercises to review: fitness merge review[/dim]")
+        console.print(f"[dim]{_plural(len(candidates), 'group')} of similar exercises to review: "
+                      "fitness merge review[/dim]")
 
 
 # --- check & fix ------------------------------------------------------------
+
+def _valid_amount(value: float) -> bool:
+    return math.isfinite(value) and value >= 0
+
 
 def _resolve_set_labels(console: Console, entry: ExerciseEntry, labels: list[str]) -> list[int]:
     """Turn set labels as shown by `fitness show` (1, 2, W, D, D2, F) into positions."""
@@ -971,13 +1049,14 @@ def _resolve_set_labels(console: Console, entry: ExerciseEntry, labels: list[str
             type_ = {"W": SetType.WARMUP, "D": SetType.DROP, "F": SetType.FAILURE}[label[0]]
             of_type = [s for s in entry.sets if s.set_type is type_]
             if len(label) == 1 and len(of_type) > 1:
-                _fail(console, f"{entry.name} has {len(of_type)} {label} sets; use {label}1, {label}2, …")
+                _fail(console, f"{esc(entry.name)} has {len(of_type)} {esc(label)} sets; "
+                      f"use {esc(label)}1, {esc(label)}2, …")
             index = int(label[1:] or 1)
             match = of_type[index - 1:index]
         else:
             match = []
         if not match:
-            _fail(console, f"{entry.name} has no set {label!r} in that workout (sets: "
+            _fail(console, f"{esc(entry.name)} has no set {esc(repr(label))} in that workout (sets: "
                   f"{', '.join(_set_label(s) for s in entry.sets)}).")
         positions.append(match[0].position)
     return positions
@@ -988,12 +1067,14 @@ def fix(
     ctx: typer.Context,
     when: str = typer.Argument(..., help="Workout start time, e.g. 2026-06-04T13:53 (a date works if unique)."),
     exercise: str = typer.Argument(..., help="Exercise name in that workout (or a unique part of it)."),
-    sets: list[str] = typer.Option([], "--set", help="Set label as shown by `fitness show` (1, 2, W, D, F). Repeatable; default all sets."),
-    occurrence: int = typer.Option(1, "--occurrence", help="Which entry, if the exercise appears more than once."),
+    sets: list[str] = typer.Option([], "--set", help="Set label as shown by `fitness show` (1, 2, W, D, F). "
+                                   "Repeatable; default all sets."),
+    occurrence: int = typer.Option(1, "--occurrence", min=1,
+                                   help="Which entry, if the exercise appears more than once."),
     swap: bool = typer.Option(False, "--swap-weight-reps", help="Swap weight and reps."),
-    weight: Optional[float] = typer.Option(None, "--weight", help="Set the weight (lb)."),
-    reps: Optional[float] = typer.Option(None, "--reps", help="Set the reps."),
-    seconds: Optional[float] = typer.Option(None, "--seconds", help="Set the hold time."),
+    weight: float | None = typer.Option(None, "--weight", help="Set the weight (lb)."),
+    reps: float | None = typer.Option(None, "--reps", help="Set the reps."),
+    seconds: float | None = typer.Option(None, "--seconds", help="Set the hold time."),
 ):
     """Correct set values. The original data is kept; undo with `fitness corrections revert ID`."""
     state = _state(ctx)
@@ -1003,17 +1084,24 @@ def fix(
         _fail(console, "use --swap-weight-reps or --weight/--reps/--seconds, not both.")
     if not swap and all(v is None for v in (weight, reps, seconds)):
         _fail(console, "say what to change: --swap-weight-reps, --weight, --reps, or --seconds.")
+    for option, v in (("--weight", weight), ("--reps", reps), ("--seconds", seconds)):
+        if v is not None and not _valid_amount(v):
+            _fail(console, f"{option} must be a number of 0 or more, got {_num(v)}.")
+    _require_workouts(state)
     workouts = store.find_workouts(when)
     if not workouts:
-        _fail(console, f"no workout starts at {when!r}. See [bold]fitness workouts[/bold].")
+        _fail(console, f"no workout starts at {esc(repr(when))}. See [bold]fitness workouts[/bold].")
     if len(workouts) > 1:
-        _fail(console, f"{when!r} matches {len(workouts)} workouts "
-              f"({', '.join(f'{w.started_at:%H:%M}' for w in workouts)}); add the time, e.g. {workout_key(workouts[0].started_at)[:16]}.")
+        _fail(console, f"{esc(repr(when))} matches {len(workouts)} workouts "
+              f"({', '.join(f'{w.started_at:%H:%M}' for w in workouts)}); add the time, "
+              f"e.g. {workout_key(workouts[0].started_at)[:16]}.")
     workout = workouts[0]
-    name = _resolve_exercise(console, exercise, [e.name for e in workout.exercises])
+    in_workout = list(dict.fromkeys(e.name for e in workout.exercises))
+    name = _resolve_exercise(console, exercise, in_workout, where=" in that workout",
+                             hint=f"It has: {esc(', '.join(in_workout))}.")
     entries = [e for e in workout.exercises if e.name == name]
     if not 1 <= occurrence <= len(entries):
-        _fail(console, f"{name} appears {len(entries)} time(s) in that workout.")
+        _fail(console, f"{esc(name)} appears {len(entries)} time(s) in that workout.")
     entry = entries[occurrence - 1]
     positions = _resolve_set_labels(console, entry, sets)
 
@@ -1024,14 +1112,15 @@ def fix(
         if swap:
             changes[pos] = {"weight": s.reps, "reps": s.weight}
         else:
-            changes[pos] = {f: v for f, v in (("weight", weight), ("reps", reps), ("seconds", seconds)) if v is not None}
+            given = (("weight", weight), ("reps", reps), ("seconds", seconds))
+            changes[pos] = {f: v for f, v in given if v is not None}
     existing_ids = {c.id for c in store.corrections(type_=corr.VALUE_FIX)}
     try:
         c = store.add_value_fix(workout, name, occurrence, changes)
     except ValueError as exc:
-        _fail(console, str(exc))
+        _fail(console, esc(exc))
     verb = "Updated" if c.id in existing_ids else "Recorded"
-    console.print(f"{verb} correction #{c.id}: {c.reason}")
+    console.print(f"{verb} correction #{c.id}: {esc(c.reason)}")
     console.print(f"[dim]Undo with: fitness corrections revert {c.id}[/dim]")
 
 
@@ -1069,7 +1158,8 @@ def check(
         console.print(escape(menu))
         choice = typer.prompt(">", default="k", show_default=False).strip().lower()
         while choice not in options:
-            choice = typer.prompt(f"Choose one of {', '.join(options)}", default="k", show_default=False).strip().lower()
+            choice = typer.prompt(f"Choose one of {', '.join(options)}", default="k",
+                                  show_default=False).strip().lower()
         if choice == "q":
             break
         if choice == "k":
@@ -1088,24 +1178,28 @@ def check(
                 new_weight = typer.prompt(f"  Set {_set_label(s)} weight (lb)", default=_num(s.weight))
                 new_reps = typer.prompt(f"  Set {_set_label(s)} reps", default=_num(s.reps))
                 try:
-                    changes[s.position] = {"weight": float(new_weight), "reps": float(new_reps)}
+                    values = {"weight": float(new_weight), "reps": float(new_reps)}
                 except ValueError:
-                    _fail(console, "weight and reps must be numbers.")
+                    values = {}
+                if not values or not all(map(_valid_amount, values.values())):
+                    _fail(console, "weight and reps must be numbers of 0 or more.")
+                changes[s.position] = values
         try:
             c = store.add_value_fix(g.workout, g.entry.name, g.occurrence, changes)
         except ValueError as exc:
-            console.print(f"[yellow]{exc}[/yellow]\n")
+            console.print(f"[yellow]{esc(exc)}[/yellow]\n")
             continue
-        console.print(f"Recorded correction #{c.id}: {c.reason}\n")
+        console.print(f"Recorded correction #{c.id}: {esc(c.reason)}\n")
 
 
 def _print_flag_group(console: Console, g: outliers.FlagGroup, i: int, n: int) -> None:
-    console.print(f"[bold]({i}/{n}) {g.entry.name}[/bold] — {_when(g.workout.started_at)} ({g.workout.name})")
+    console.print(f"[bold]({i}/{n}) {esc(g.entry.name)}[/bold] — {_when(g.workout.started_at)} "
+                  f"({esc(g.workout.name)})")
     flagged = {f.set.position: f for f in g.flags}
     for s in g.entry.sets:
-        line = f"  {_set_label(s):>2}  {describe_set(s)}"
+        line = esc(f"  {_set_label(s):>2}  {describe_set(s)}")
         if s.position in flagged:
-            console.print(f"[yellow]{line}  ⚠ {flagged[s.position].message}[/yellow]")
+            console.print(f"[yellow]{line}  ⚠ {esc(flagged[s.position].message)}[/yellow]")
         else:
             console.print(f"[dim]{line}[/dim]")
     if g.swap_plausible:
@@ -1159,7 +1253,8 @@ def _print_candidate(console: Console, store: Store, catalog, group, members, i:
             last = f"last top set {similarity.describe_sets(m.sets[-1:])}"
         else:
             span, last = "", "no working sets"
-        table.add_row(escape(f"  [{j}]"), m.name, _plural(m.sessions, "session"), span, f"[dim]{last}[/dim]")
+        table.add_row(escape(f"  [{j}]"), esc(m.name), _plural(m.sessions, "session"), span,
+                      f"[dim]{esc(last)}[/dim]")
     console.print(table)
     kept = members[_default_kept(members)]
     kind = catalog.kind(kept.name)
@@ -1167,11 +1262,11 @@ def _print_candidate(console: Console, store: Store, catalog, group, members, i:
         if m is kept:
             continue
         s = similarity.suggest_offset(kept.name, kept.sets, m.name, m.sets, kind)
-        console.print(f"  {s.relation}")
+        console.print(f"  {esc(s.relation)}")
         if s.kept_sets and s.adjusted_sets and _offset_allowed(kind):
-            console.print(f"  [dim]Compared top sets: {kept.name} {similarity.describe_sets(s.kept_sets)} vs "
-                          f"{m.name} {similarity.describe_sets(s.adjusted_sets)}.[/dim]")
-            console.print(f"  {s.summary}")
+            console.print(f"  [dim]Compared top sets: {esc(kept.name)} {similarity.describe_sets(s.kept_sets)} vs "
+                          f"{esc(m.name)} {similarity.describe_sets(s.adjusted_sets)}.[/dim]")
+            console.print(f"  {esc(s.summary)}")
 
 
 def _print_preview(console: Console, kept: Member, others: list[tuple[Member, float | None, float | None]]) -> None:
@@ -1186,13 +1281,13 @@ def _print_preview(console: Console, kept: Member, others: list[tuple[Member, fl
     switch = min((m.sets[0].when for m, _, _ in others if m.sets), default=rows[0][0])
     nearest = sorted(rows, key=lambda r: abs((r[0] - switch).total_seconds()))[:12]
     nearest.sort(key=lambda r: r[0])
-    table = Table(title=f"Combined as {kept.name} (12 sessions nearest the switch)", title_justify="left",
+    table = Table(title=f"Combined as {esc(kept.name)} (12 sessions nearest the switch)", title_justify="left",
                   box=None, header_style="bold", pad_edge=False)
     for col in ("Date", "Recorded as", "Top set", "Counts as"):
         table.add_column(col)
     for when, name, t, adjusted in nearest:
         counts = f"{_num(adjusted)} lb × {_num(t.reps)}" if name != kept.name else ""
-        table.add_row(f"{when:%Y-%m-%d}", name, f"{_num(t.weight)} lb × {_num(t.reps)}", counts)
+        table.add_row(f"{when:%Y-%m-%d}", esc(name), f"{_num(t.weight)} lb × {_num(t.reps)}", counts)
     console.print(table)
 
 
@@ -1308,17 +1403,18 @@ def merge_review(
                             raise ValueError
                         break
                     except ValueError:
-                        console.print("  Enter a number of lb (e.g. -50)" + (" or a factor (e.g. x0.75)." if kind == LOADED else "."))
+                        console.print("  Enter a number of lb (e.g. -50)"
+                                      + (" or a factor (e.g. x0.75)." if kind == LOADED else "."))
             try:
                 c = store.add_exercise_merge(m.name, kept.name, offset=offset, factor=factor)
             except ValueError as exc:
-                console.print(f"[yellow]{exc}[/yellow]")
+                console.print(f"[yellow]{esc(exc)}[/yellow]")
                 continue
-            console.print(f"Recorded correction #{c.id}: {c.reason}")
+            console.print(f"Recorded correction #{c.id}: {esc(c.reason)}")
         left_out = [members[j].name for j in everyone if j not in chosen]
         for name in left_out:
             store.keep_separate([name, kept.name])
-            console.print(f"[dim]Kept {name} separate from {kept.name}.[/dim]")
+            console.print(f"[dim]Kept {esc(name)} separate from {esc(kept.name)}.[/dim]")
         console.print()
 
 
@@ -1342,7 +1438,7 @@ def merge_list(ctx: typer.Context):
         for col in ("Recorded as", "Counts as", "Adjustment", "Correction"):
             table.add_column(col)
         for m in sorted(active.values(), key=lambda m: (m.into, m.source)):
-            table.add_row(m.source, m.into, m.label or "none", f"#{m.correction_id}")
+            table.add_row(esc(m.source), esc(m.into), m.label or "none", f"#{m.correction_id}")
         console.print(table)
     if separate:
         table = Table(title="\nKept separate", title_justify="left", box=None, header_style="bold", pad_edge=False)
@@ -1350,7 +1446,7 @@ def merge_list(ctx: typer.Context):
         table.add_column("")
         table.add_column("Exercise")
         for a, b in separate:
-            table.add_row(a, "≠", b)
+            table.add_row(esc(a), "≠", esc(b))
         console.print(table)
     console.print("[dim]Undo a combination with: fitness merge undo NAME. "
                   "Forget a keep-separate decision with: fitness merge forget A B[/dim]")
@@ -1361,21 +1457,22 @@ def merge_add(
     ctx: typer.Context,
     source: str = typer.Argument(..., help="Exercise to combine away (its sets get counted under --into)."),
     into: str = typer.Option(..., "--into", help="Exercise name to keep."),
-    offset: Optional[float] = typer.Option(None, "--offset", help="lb to add to every set of SOURCE (e.g. -50)."),
-    factor: Optional[float] = typer.Option(None, "--factor", help="Multiply every SOURCE weight by this (e.g. 0.75)."),
+    offset: float | None = typer.Option(None, "--offset", help="lb to add to every set of SOURCE (e.g. -50)."),
+    factor: float | None = typer.Option(None, "--factor", help="Multiply every SOURCE weight by this (e.g. 0.75)."),
 ):
     """Combine one exercise into another, optionally adjusting its weights."""
     state = _state(ctx)
     console = state.console
+    _require_workouts(state)
     names = _all_names(state)
     source = _resolve_exercise(console, source, names)
     into = _resolve_exercise(console, into, names)
     try:
         c = state.store.add_exercise_merge(source, into, offset=offset, factor=factor)
     except ValueError as exc:
-        _fail(console, str(exc))
-    console.print(f"Recorded correction #{c.id}: {c.reason}")
-    console.print(f"[dim]Undo with: fitness merge undo \"{source}\"[/dim]")
+        _fail(console, esc(exc))
+    console.print(f"Recorded correction #{c.id}: {esc(c.reason)}")
+    console.print(f"[dim]Undo with: fitness merge undo {esc(_quote(source))}[/dim]")
 
 
 @merge_app.command("separate")
@@ -1386,12 +1483,13 @@ def merge_separate(
     """Record that exercises are different, so they aren't offered for combining again."""
     state = _state(ctx)
     console = state.console
+    _require_workouts(state)
     all_names = _all_names(state)
     resolved = sorted({_resolve_exercise(console, n, all_names) for n in names})
     if len(resolved) < 2:
         _fail(console, "name at least two different exercises.")
     pairs = state.store.keep_separate(resolved)
-    console.print(f"Keeping {', '.join(resolved)} separate ({_plural(pairs, 'pair')}).")
+    console.print(f"Keeping {esc(', '.join(resolved))} separate ({_plural(pairs, 'pair')}).")
 
 
 @merge_app.command("forget")
@@ -1399,12 +1497,13 @@ def merge_forget(ctx: typer.Context, a: str, b: str):
     """Forget a keep-separate decision, so the pair is offered for review again."""
     state = _state(ctx)
     console = state.console
+    _require_workouts(state)
     names = _all_names(state)
     a, b = _resolve_exercise(console, a, names), _resolve_exercise(console, b, names)
     if state.store.forget_separate(a, b):
-        console.print(f"Forgot the decision to keep {a} and {b} separate.")
+        console.print(f"Forgot the decision to keep {esc(a)} and {esc(b)} separate.")
     else:
-        _fail(console, f"{a} and {b} weren't marked as separate.")
+        _fail(console, f"{esc(a)} and {esc(b)} weren't marked as separate.")
 
 
 @merge_app.command("undo")
@@ -1412,12 +1511,13 @@ def merge_undo(ctx: typer.Context, source: str = typer.Argument(..., help="The e
     """Undo a combination; the exercise goes back to its own history."""
     state = _state(ctx)
     console = state.console
+    _require_workouts(state)
     source = _resolve_exercise(console, source, _all_names(state))
     try:
         c = state.store.undo_exercise_merge(source, state.settings)
     except (KeyError, ValueError) as exc:
-        _fail(console, str(exc.args[0]))
-    console.print(f"Reverted #{c.id}: {c.reason}")
+        _fail(console, esc(exc.args[0]))
+    console.print(f"Reverted #{c.id}: {esc(c.reason)}")
     console.print(f"[dim]Re-apply with: fitness corrections restore {c.id}[/dim]")
 
 
@@ -1429,7 +1529,7 @@ def config_show(ctx: typer.Context):
     state = _state(ctx)
     path = settings_mod.resolve_path(state.config_path)
     exists = "" if path.exists() else " (not created yet; using defaults)"
-    state.console.print(f"Settings file: {path}{exists}")
+    state.console.print(f"Settings file: {esc(path)}{exists}")
     for key in settings_mod.KEYS:
         state.console.print(f"  {key} = {_num(getattr(state.settings, key))}")
 
@@ -1442,7 +1542,7 @@ def config_set(ctx: typer.Context, key: str, value: str):
     try:
         old, new = settings_mod.set_value(key, value, state.config_path)
     except (KeyError, ValueError) as exc:
-        _fail(console, str(exc.args[0]))
+        _fail(console, esc(exc.args[0]))
     key = settings_mod.normalize_key(key)
     console.print(f"{key}: {_num(getattr(old, key))} → {_num(getattr(new, key))}")
     state._settings = new
@@ -1470,6 +1570,7 @@ def gui(ctx: typer.Context):
 # Commands defined in other modules add themselves to `app` on import.
 from . import cli_metadata  # noqa: E402,F401
 from .cli_plots import plot_app  # noqa: E402
+
 app.add_typer(plot_app, name="plot")
 from . import cli_export  # noqa: E402,F401
 
