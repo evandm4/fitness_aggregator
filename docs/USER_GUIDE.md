@@ -34,7 +34,7 @@ python3 -m venv .venv
 
 Then either activate the environment (`source .venv/bin/activate`) or call `.venv/bin/fitness` directly. The rest of this guide writes `fitness`.
 
-> **Run commands from the project folder.** The muscle map (`config/exercises.toml`) and the settings file (`config/settings.toml`) are found relative to the current folder. From somewhere else, settings fall back to `~/.fitness_aggregator/settings.toml`, and muscle groups fall back to keyword guesses. See [§11](#11-export-settings-files-and-backups).
+> **Where config is found.** The settings file is `config/settings.toml` when you run from the project folder, otherwise `~/.fitness_aggregator/settings.toml`. The muscle map is found from any folder: `$FITNESS_AGGREGATOR_EXERCISES`, then `./config/exercises.toml`, then `~/.fitness_aggregator/exercises.toml`, then the project's own `config/exercises.toml`. See [§11](#11-export-settings-files-and-backups).
 
 ## 2. Export from Strong
 
@@ -91,7 +91,7 @@ $ fitness check
 ```
 
 - **`s` swap** or **`e` edit** records a `value_fix` correction.
-- **`i` dismiss** means "this is right". The flag isn't raised again, and no correction is created.
+- **`i` dismiss** means "this is right". The flag isn't raised again, and no correction is created. `fitness check --dismissed` lists what you've dismissed, and `fitness check --undismiss` raises those flags again.
 - **`k` skip** leaves it for next time.
 
 `fitness check --list` shows the flags without asking anything. To fix something no rule catches, use `fitness fix` directly. Name the workout by its start time (a date works if only one workout is on it), then the exercise:
@@ -301,7 +301,7 @@ fitness plot rep-prs "leg extension (machine)"      # best load at 1–15 reps, 
 fitness plot dashboard --out summary.pdf            # one-page summary
 ```
 
-There is also a chart of weekly hard sets per muscle (`fitness plot sets-per-muscle`), drawn against the 10–20 target band, if your version has it. Run `fitness plot --help` for the full list and each chart's options.
+There is also a chart of weekly hard sets per muscle, drawn against the 10–20 target band: `fitness plot sets-per-muscle` (pick muscles with `-m chest -m lats`, use `--heatmap` for every muscle at once, `--by month` for average sets per week in each month, or `--target none`). The week still in progress is left out. Run `fitness plot --help` for the full list and each chart's options.
 
 Charts built from corrected data say so in a footnote, for example when they include a combined exercise or use the placeholder bodyweight.
 
@@ -432,11 +432,11 @@ Two possible reasons:
 | combining two exercises | `fitness merge undo "NAME THAT WAS COMBINED AWAY"` |
 | a "keep separate" decision | `fitness merge forget A B` |
 | a revert | `fitness corrections restore ID` |
-| dismissing a flag | There's no command for this yet. Fix the set with `fitness fix` instead |
+| dismissing a flag | `fitness check --undismiss` raises every dismissed flag again (`fitness check --dismissed` lists them first) |
 
 **A workout's duration shows in (parentheses).** It's over the suspect-duration limit (4 hours by default), so it's left out of duration stats. Revert that `duration_suspect` correction if the workout really was that long.
 
-**`fitness muscles` shows guesses, or wrong muscles.** Either you're running from a folder that has no `config/exercises.toml`, or the exercise is new. Run from the project folder, and check `fitness exercises --unmapped`.
+**`fitness muscles` shows guesses, or wrong muscles.** The exercise is probably new, so it has no entry in `config/exercises.toml` yet. `fitness exercises --unmapped` lists these with a snippet to paste into the file.
 
 **My PRs look too high or too low.** Look for a typo with `fitness check`, or check whether two exercises are combined with an offset (`fitness merge list`). Compare against `--raw` to see the numbers without any corrections.
 

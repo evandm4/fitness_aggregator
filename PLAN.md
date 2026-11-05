@@ -309,7 +309,7 @@ fitness history "Bench Press (Barbell)"     # session-by-session table for one l
 fitness prs [EXERCISE] [--recent 30d] [--sort name|e1rm|recent]
 fitness stats [--by week|month]             # sessions, streaks, volume, PRs per period
 fitness muscles [--by week|month]           # hard sets per muscle group
-fitness check [--list]                      # interactive review of flagged sets (swap / edit / dismiss)
+fitness check [--list | --dismissed | --undismiss]   # review flagged sets (swap / edit / dismiss), or undo dismissals
 fitness fix 2026-06-04T13:53 "Preacher Curl (Machine)" --swap-weight-reps [--set 1 ...]
 
 fitness corrections [--type T] [--auto|--user] [--status S] [--exercise E] [--since D] [--all]
@@ -369,10 +369,10 @@ Every plot function has the signature `plot_x(df, **opts) -> matplotlib.figure.F
 2. ✅ **Store, import, corrections log.** SQLite schema, full-history import with change summary (§2c), automatic workout merging and suspect-duration flags, all recorded in the log. Commands: `import`, `workouts`, `show`, `corrections`. The sample data ends up with 103 sessions and exactly one workout merge, on 2026-06-02.
 3. ✅ **Metrics + text commands.** `history`, `prs`, `stats`, `exercises`, plus `check` / `fix` for flagged sets.
 4. ✅ **Similar-exercise merging.** Candidate detection, offset suggestion, `merge review` and the other `merge` commands.
-5. ✅ **Plots.** `plots/` package with a shared style, and `fitness plot progress`, `volume`, `calendar`, `duration`, `frequency`, `rep-prs` and `dashboard`; `--out` (PNG/SVG/PDF) and `--show`; footnotes for corrections, merges and placeholder bodyweight; and the chart version of the merge preview. 🔄 In progress: a `plot sets-per-muscle` command on top of the existing `plot_sets_per_muscle` chart.
+5. ✅ **Plots.** `plots/` package with a shared style, and `fitness plot progress`, `volume`, `calendar`, `duration`, `frequency`, `rep-prs` and `dashboard`; `--out` (PNG/SVG/PDF) and `--show`; footnotes for corrections, merges and placeholder bodyweight; and the chart version of the merge preview. Also `fitness plot sets-per-muscle` (lines or `--heatmap`, `--muscle`, `--target`, monthly view as average sets per week).
 6. ✅ **Metadata + Apple Health bodyweight.** `exercises.toml` maps all 103 exercises to primary/secondary muscles (fixed vocabulary, keyword guesses for new names), `metrics.weekly_muscle_sets`, `fitness muscles`, and `fitness exercises --unmapped`. `fitness import-health` / `fitness bodyweight` (schema 4 `bodyweight` table, full-history replace like §2c), and every analysis uses real dated weights when present.
-7. ✅ **Desktop app.** Optional PySide6 GUI (`fitness gui` / `fitness-gui`, `.[gui]` extra): overview, workouts, exercise history with progress chart, PRs, corrections (revert/restore), and a Review tab for flags and similar exercises; File → Import with a preview of the changes. A Qt-free `controller.py` runs the same `Store` calls as the CLI. 🔄 In progress: Charts, Muscles and Bodyweight tabs.
-8. ✅ **Export, hardening and CI.** `fitness export` (sets, sessions, exercises, PRs or corrections as CSV/JSON); clear errors for unreadable or newer-schema database files; a workouts cache; GitHub Actions running pytest on Python 3.11 and 3.13 plus ruff. 🔄 In progress: a `--version` flag and error-message polish.
+7. ✅ **Desktop app.** Optional PySide6 GUI (`fitness gui` / `fitness-gui`, `.[gui]` extra): overview, workouts, exercise history with progress chart, PRs, corrections (revert/restore), and a Review tab for flags and similar exercises; File → Import with a preview of the changes. A Qt-free `controller.py` runs the same `Store` calls as the CLI.
+8. ✅ **Export, hardening and CI.** `fitness export` (sets, sessions, exercises, PRs or corrections as CSV/JSON); clear errors for unreadable or newer-schema database files; a workouts cache; GitHub Actions running pytest on Python 3.11 and 3.13 plus ruff. Plus `fitness --version`, escaping of user text in all output (an exercise named `Fly [/x]` used to crash commands), one-line errors for bad database or settings files, and validation of fix values and dates.
 9. ✅ **Docs.** README front page, [user guide](docs/USER_GUIDE.md), [architecture](docs/ARCHITECTURE.md).
 
 ## 9. Decisions and open questions
@@ -395,8 +395,6 @@ Ideas, roughly in order of usefulness:
 
 - **Manual logging.** `fitness log` to add a set or a workout from the terminal (or a GUI form), stored alongside imported data with its own source so re-imports don't drop it.
 - **Other importers.** Hevy, FitNotes or a generic CSV, behind the same `importers/` interface. Needs a decision on how workouts from two apps are keyed and deduplicated.
-- **Find `exercises.toml` the way settings are found.** Today it's read from `./config/` only, so running from another folder falls back to keyword guesses. A `--exercises` option, an environment variable, or `~/.fitness_aggregator/exercises.toml` would fix that.
-- **Undo a dismissed flag.** There's no command yet to bring back a flag dismissed in `fitness check`.
 - **kg display** (`--units kg`), and support for Strong exports recorded in kg.
 - **Group by base movement** ("all bench press variants") from the `Base Movement (Equipment)` naming.
 - **Volume stacked by muscle group**, and split adherence (Push/Pull/Legs per week) as a stat and a chart.
