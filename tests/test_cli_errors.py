@@ -159,6 +159,17 @@ def test_fix_rejects_negative_and_nan_values(run, tmp_path):
     _clean(r, 2)
 
 
+def test_check_edit_rejects_negative_and_non_numbers(run, tmp_path):
+    swapped = workout_rows("2026-06-06 13:00:00", "1h", name="Push",
+                           exercises=(("Bench Press (Barbell)", ((8, 135),)),))
+    run("import", write_export(tmp_path / "e.csv", A, B, swapped))
+    for answers in ("e\n-5\n8\n", "e\n135\nabc\n"):
+        r = run("check", input=answers)
+        _clean(r)
+        assert "Error: weight and reps must be numbers of 0 or more." in r.output
+    assert "value_fix" not in run("corrections").output
+
+
 def test_lower_layer_errors_get_a_full_stop(run, tmp_path):
     run("import", write_export(tmp_path / "e.csv", A))
     r = run("merge", "add", "bench", "--into", "bench")
