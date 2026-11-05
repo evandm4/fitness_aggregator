@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import pandas as pd
 from matplotlib.axes import Axes
@@ -39,8 +39,9 @@ def draw_rep_prs(ax: Axes, current: pd.DataFrame, previous: pd.DataFrame | None 
     if prev is not None:
         ax.plot(prev["reps"], prev["load"], color=style.FAINT, lw=2, marker="o", ms=5, mec=style.SURFACE,
                 zorder=2, drawstyle="default")
-        before = dict(zip(prev["reps"], prev["load"]))
-        improved = [r for r, l in zip(current["reps"], current["load"]) if l > before.get(r, float("-inf"))]
+        before = dict(zip(prev["reps"], prev["load"], strict=True))
+        improved = [r for r, load in zip(current["reps"], current["load"], strict=True)
+                    if load > before.get(r, float("-inf"))]
     ax.plot(current["reps"], current["load"], color=c, lw=2, zorder=3)
     new = current["reps"].isin(improved)
     ax.scatter(current.loc[~new, "reps"], current.loc[~new, "load"], s=30, color=c, edgecolors=style.SURFACE,
@@ -83,7 +84,8 @@ def plot_rep_prs(current: pd.DataFrame, previous: pd.DataFrame | None = None, *,
         if previous is None or previous.empty:
             sub = "No sessions before the comparison date"
         elif info["improved"]:
-            sub = f"Improved at {info['improved']} rep count{'s' if info['improved'] != 1 else ''} in the last {COMPARE_DAYS} days"
+            counts = "rep count" if info["improved"] == 1 else "rep counts"
+            sub = f"Improved at {info['improved']} {counts} in the last {COMPARE_DAYS} days"
         else:
             sub = f"No rep PRs in the last {COMPARE_DAYS} days"
     style.set_titles(fig, title or (f"Rep maxes: {exercise}" if exercise else "Rep maxes"), sub, ax=ax)

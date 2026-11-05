@@ -7,7 +7,7 @@ Input contract: a DataFrame with columns ``period`` (pandas Period),
 from __future__ import annotations
 
 import math
-from typing import Iterable
+from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
@@ -62,7 +62,7 @@ def _draw_lines(fig: Figure, t: pd.DataFrame, target, colors) -> list[Axes]:
     rows = math.ceil(len(muscles) / cols)
     axes = np.atleast_1d(fig.subplots(rows, cols, sharex=True, sharey=True)).ravel()
     ymax = max(float(t.to_numpy().max()), target[1] if target else 0) * 1.1 or 1
-    for ax, m in zip(axes, muscles):
+    for ax, m in zip(axes, muscles, strict=False):
         _band(ax, target)
         ax.plot(x, t[m], color=style.color(0), lw=1.8, zorder=3)
         ax.fill_between(x, 0, t[m], color=style.color(0), alpha=0.08, lw=0, zorder=2)

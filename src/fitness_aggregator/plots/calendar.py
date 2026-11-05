@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
@@ -57,7 +57,7 @@ def draw_calendar(ax: Axes, daily: pd.Series, *, end: pd.Timestamp | None = None
         n_weeks = cap
     daily = daily[(daily.index >= start) & (daily.index <= end)]
     levels, edges = _levels(daily.to_numpy(dtype=float))
-    level_of = dict(zip(daily.index, levels))
+    level_of = dict(zip(daily.index, levels, strict=True))
 
     cells, colors = [], []
     pad = 0.12

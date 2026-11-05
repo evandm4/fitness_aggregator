@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import pandas as pd
 from matplotlib.axes import Axes
@@ -38,7 +38,7 @@ def draw_frequency(ax: Axes, summary: pd.DataFrame, *, top: int = 20, today=None
     ax.set_xlabel("Sessions")
     ax.set_ylim(-0.6, len(d) - 0.4)
     xmax = d["sessions"].max()
-    for yi, v in zip(y, d["sessions"]):
+    for yi, v in zip(y, d["sessions"], strict=True):
         ax.text(v + xmax * 0.012, yi, f"{v:g}", va="center", ha="left", fontsize=8, color=style.INK_2)
     ax.set_xlim(0, xmax * 1.08)
     if legend and neglected.any():

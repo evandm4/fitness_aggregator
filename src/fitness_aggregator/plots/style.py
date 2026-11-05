@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
-from typing import Iterable, Sequence
+from collections.abc import Iterable, Sequence
 
 import matplotlib
 import matplotlib.dates as mdates

@@ -9,8 +9,8 @@ from typer.testing import CliRunner
 from fitness_aggregator import metrics
 from fitness_aggregator.bodyweight import Bodyweight, DayValue, plan_changes
 from fitness_aggregator.cli import app
-from fitness_aggregator.importers.apple_health import HealthParseError, parse_apple_health
 from fitness_aggregator.importers import parse_strong_text
+from fitness_aggregator.importers.apple_health import HealthParseError, parse_apple_health
 from fitness_aggregator.store import SCHEMA_VERSION, Store
 from helpers import workout_rows, write_export
 

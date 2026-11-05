@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import pandas as pd
 from matplotlib.figure import Figure
@@ -62,8 +62,8 @@ def plot_dashboard(sets_df: pd.DataFrame, sessions_df: pd.DataFrame, events: pd.
         (f"{c['current_week_streak']} wk", f"current weekly streak (best {c['longest_week_streak']})"),
     ]
     tile_gs = gs[0, :].subgridspec(1, len(tiles))
-    for i, (v, l) in enumerate(tiles):
-        _tile(fig.add_subplot(tile_gs[0, i]), v, l)
+    for i, (value, label) in enumerate(tiles):
+        _tile(fig.add_subplot(tile_gs[0, i]), value, label)
 
     ax_cal = fig.add_subplot(gs[1, :4])
     draw_calendar(ax_cal, daily_volume(sets_df, sessions_df), scale_legend=False)

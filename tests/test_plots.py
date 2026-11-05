@@ -195,7 +195,7 @@ def test_merge_preview_offset_and_factor():
     text = _texts(fig)
     assert "Combine Hip Abductor 2 (Machine) into Hip Abductor (Machine)" in text
     assert "Hip Abductor 2 (Machine) -50 lb" in text and "as recorded" in text
-    combined = [l for l in fig.axes[0].get_lines() if l.get_label().startswith("Combined")][0]
+    combined = [line for line in fig.axes[0].get_lines() if line.get_label().startswith("Combined")][0]
     assert list(combined.get_ydata()) == [145, 150, 160, 155, 155]
     text = _texts(plots.plot_merge_preview(kept, other, factor=0.75))
     assert "×0.75" in text

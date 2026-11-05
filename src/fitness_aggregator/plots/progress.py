@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Mapping
+from collections.abc import Iterable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -139,9 +139,9 @@ def _legend(ax: Axes, names, info: dict, trend: bool, colors) -> None:
                       "Includes corrected sets"))
     if trend:
         extra.append((Line2D([], [], lw=3.2, color=key), f"{TREND_DAYS}-day average"))
-    for h, l in extra:
-        handles.append(h)
-        labels.append(l)
+    for handle, label in extra:
+        handles.append(handle)
+        labels.append(label)
     if handles:
         style.legend_below(ax, handles, labels)
 
@@ -170,7 +170,7 @@ def plot_progress(histories: Mapping[str, pd.DataFrame] | pd.DataFrame, prs: pd.
         fig, axes = style.new_figure(width, height or 1.0 + 2.3 * rows, nrows=rows, sharex=True)
         axes = list(np.atleast_1d(axes))
         info = {"merged": False, "corrected": False}
-        for i, (ax, n) in enumerate(zip(axes, names)):
+        for i, (ax, n) in enumerate(zip(axes, names, strict=False)):
             got = draw_progress(ax, {n: histories[n]}, prs, metric=metric, trend=trend,
                                 colors={n: style.color(i)}, legend=True)
             style.panel_title(ax, n)

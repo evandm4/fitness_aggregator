@@ -213,9 +213,10 @@ def test_cli_muscles(run):
     assert r.exit_code == 0, r.output
     lines = r.output.splitlines()
     assert lines[0].split() == ["Muscle", "06-01", "06-08", "Avg"]
-    chest = next(l for l in lines if l.startswith("chest"))
+    chest = next(line for line in lines if line.startswith("chest"))
     assert chest.split() == ["chest", "12", "22", "17.0"]
-    assert next(l for l in lines if l.startswith("front delts")).split() == ["front", "delts", "6", "11", "8.5"]
+    front = next(line for line in lines if line.startswith("front delts"))
+    assert front.split() == ["front", "delts", "6", "11", "8.5"]
     assert "Guessed muscles for 1 exercise" in r.output and "Hammer Curl (Dumbbell) → biceps, forearms" in r.output
     assert "Not counted (no muscles known): Mystery" in r.output
     assert "unknown muscle 'wings' ignored" in r.output
@@ -235,7 +236,7 @@ def test_cli_exercises_muscles_column_and_unmapped(run):
     r = run("exercises")
     assert r.exit_code == 0, r.output
     assert "Muscles" in r.output
-    bench = next(l for l in r.output.splitlines() if l.startswith("Bench"))
+    bench = next(line for line in r.output.splitlines() if line.startswith("Bench"))
     assert bench.rstrip().endswith("chest")
     assert "biceps, forearms?" in r.output
     assert "1 exercise with guessed muscles" in r.output
