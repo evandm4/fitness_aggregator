@@ -6,7 +6,6 @@ from typing import Iterable, Sequence
 
 import pandas as pd
 from matplotlib.figure import Figure
-from matplotlib.lines import Line2D
 
 from ..merges import Merge, adjustment_label
 from ..similarity import TopSet

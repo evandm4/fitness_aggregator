@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
-from matplotlib.patches import Patch
 
 from . import style
 
