@@ -356,7 +356,7 @@ Every plot function has the signature `plot_x(df, **opts) -> matplotlib.figure.F
 
 ## 8. Milestones
 
-1. **Parser + models.** `strong_csv.py` handles every quirk in §1. Tests use small fixture files, plus a smoke test on the real file: 104 workouts, 1,962 sets, and the rest timers attached.
+1. ✅ **Parser + models.** `strong_csv.py` handles every quirk in §1. Tests use small fixture files, plus a smoke test on the real file: 104 workouts, 1,962 sets, and the rest timers attached.
 2. **Store, import, corrections log.** SQLite schema, full-history import with change summary (§2c), automatic workout merging and suspect-duration flags, all recorded in the log. Commands: `import`, `workouts`, `show`, `corrections`. The test for this step checks that the sample data ends up with 103 sessions and exactly one workout merge, on 2026-06-02.
 3. **Metrics + text commands.** `history`, `prs`, `stats`, `exercises`, plus `check` / `fix` for flagged outliers.
 4. **Similar-exercise merging.** Candidate detection, offset suggestion, `merge review` and the other `merge` commands.
