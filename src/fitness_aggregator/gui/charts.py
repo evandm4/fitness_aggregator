@@ -26,6 +26,7 @@ class ChartSpec:
     label: str
     needs_exercise: bool = False
     min_scale: float = 0.5  # the canvas never shrinks below this fraction of the figure's natural size
+    scale: bool = False  # draw at natural size and scale the picture (layouts that only work at that size)
 
 
 CHARTS = [
@@ -36,8 +37,8 @@ CHARTS = [
     ChartSpec("duration", "Session duration"),
     ChartSpec("frequency", "Exercise frequency"),
     ChartSpec("rep-prs", "Rep PRs (selected exercise)", needs_exercise=True),
-    ChartSpec("muscles", "Sets per muscle per week"),
-    ChartSpec("dashboard", "Dashboard", min_scale=0.62),
+    ChartSpec("muscles", "Sets per muscle per week", min_scale=0.7),
+    ChartSpec("dashboard", "Dashboard", min_scale=0.6, scale=True),
 ]
 SPECS = {c.key: c for c in CHARTS}
 

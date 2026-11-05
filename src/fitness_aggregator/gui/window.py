@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import html
+import io
 import time
 from typing import Callable
 
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from PySide6.QtCore import QByteArray, QItemSelectionModel, QObject, QRunnable, QSettings, Qt, QThreadPool, Signal
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
@@ -141,34 +143,79 @@ def muted(text: str = "") -> QLabel:
     return label
 
 
-class ChartView(QScrollArea):
-    """Holds one matplotlib canvas; ``show_figure`` swaps in a new figure.
+class ScaledImage(QWidget):
+    """Paints a pixmap scaled to the widget (the owner keeps the aspect ratio)."""
 
-    The canvas fills the view and the figure resizes with it (constrained layout
-    re-flows it). It never shrinks below ``min_scale`` of the figure's natural
-    size: past that the view scrolls instead of squashing the chart.
+    def __init__(self, pixmap: QPixmap):
+        super().__init__()
+        self.pixmap = pixmap
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.drawPixmap(self.rect(), self.pixmap)
+
+
+class ChartView(QScrollArea):
+    """Holds one chart; ``show_figure`` swaps in a new figure.
+
+    Normally the matplotlib canvas fills the view and the figure resizes with
+    it (constrained layout re-flows it). It never shrinks below ``min_scale``
+    of the figure's natural size: past that the view scrolls instead of
+    squashing the chart. With ``scale=True`` (big composite figures like the
+    dashboard, whose layout only works at its natural size) the figure is
+    drawn once at natural size and shown scaled to the view's width.
     """
 
     def __init__(self, min_height: int = 220):
         super().__init__()
-        self.setWidgetResizable(True)
         self.setFrameShape(QFrame.NoFrame)
-        self.setStyleSheet(f"QScrollArea {{ background: {CHART_SURFACE}; }}")
+        self.setStyleSheet(f"QScrollArea, QScrollArea > QWidget > QWidget {{ background: {CHART_SURFACE}; }}")
         self.canvas: FigureCanvasQTAgg | None = None
+        self.image: ScaledImage | None = None
+        self._figure = None
+        self._natural = (0, 0)
+        self._min_scale = 0.5
         self.setMinimumHeight(min_height)
 
     @property
     def figure(self):
-        return self.canvas.figure if self.canvas else None
+        return self._figure
 
-    def show_figure(self, fig, min_scale: float = 0.5) -> None:
+    def show_figure(self, fig, min_scale: float = 0.5, scale: bool = False) -> None:
+        self._figure, self._min_scale = fig, min_scale
         w, h = fig.get_size_inches() * fig.dpi
+        self._natural = (w, h)
+        if scale:
+            ratio = self.devicePixelRatioF()
+            FigureCanvasAgg(fig)
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=fig.dpi * max(ratio, 1.0))
+            pixmap = QPixmap()
+            pixmap.loadFromData(buf.getvalue(), "PNG")
+            self.canvas, self.image = None, ScaledImage(pixmap)
+            self.setWidgetResizable(False)
+            self.setWidget(self.image)  # deletes the previous chart widget
+            self._fit_image()
+            return
         canvas = FigureCanvasQTAgg(fig)
         canvas.setMinimumSize(int(w * min_scale), int(h * min_scale))
         charts.keep_footnotes_fitted(fig)
-        self.setWidget(canvas)  # deletes the previous canvas
-        self.canvas = canvas
+        self.setWidgetResizable(True)
+        self.setWidget(canvas)  # deletes the previous chart widget
+        self.canvas, self.image = canvas, None
         canvas.draw_idle()
+
+    def _fit_image(self) -> None:
+        if self.image is None:
+            return
+        nw, nh = self._natural
+        width = max(self.viewport().width(), int(nw * self._min_scale))
+        self.image.setFixedSize(width, int(width * nh / nw))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_image()
 
 
 # --- tabs ------------------------------------------------------------------------------------
@@ -850,7 +897,7 @@ class ChartsTab(Tab):
                             formula=self.ctl.formula)
 
     def render(self) -> None:
-        self.chart.show_figure(self._figure(), self.spec.min_scale)
+        self.chart.show_figure(self._figure(), self.spec.min_scale, scale=self.spec.scale)
         self.dirty = False
 
     def save(self, path: str | None = None):
@@ -933,7 +980,7 @@ class MusclesTab(Tab):
 
     def render(self) -> None:
         self.chart.show_figure(charts.muscles_figure(self.ctl.snap.muscle_sets, self.kind_combo.currentData()),
-                               min_scale=0.45)
+                               min_scale=0.7)
         self.dirty = False
 
 

@@ -45,7 +45,7 @@ TIER_TEXT = {
 }
 RECENT_PR_DAYS = 30
 LOW_SETS, HIGH_SETS = 10, 20  # weekly hard sets, as ``fitness muscles`` and the sets-per-muscle chart
-MUSCLE_WEEKS = 12
+MUSCLE_WEEKS = 16
 HEALTH_ERRORS = (HealthParseError, zipfile.BadZipFile, OSError)
 
 
