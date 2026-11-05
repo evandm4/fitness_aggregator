@@ -1436,5 +1436,17 @@ def config_set(ctx: typer.Context, key: str, value: str):
             console.print("No automatic corrections changed.")
 
 
+# --- gui --------------------------------------------------------------------
+
+@app.command()
+def gui(ctx: typer.Context):
+    """Open the desktop app (an optional install; see the README)."""
+    from .gui.app import missing_dependencies, run
+    state = _state(ctx)
+    if missing := missing_dependencies():
+        _fail(state.console, escape(missing))
+    raise typer.Exit(run(state.db_path, state.config_path))
+
+
 if __name__ == "__main__":
     app()
