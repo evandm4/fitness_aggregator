@@ -1128,6 +1128,8 @@ def fix(
 def check(
     ctx: typer.Context,
     list_only: bool = typer.Option(False, "--list", help="List flagged sets without asking about them."),
+    show_dismissed: bool = typer.Option(False, "--dismissed", help="List flags you dismissed earlier."),
+    undismiss: bool = typer.Option(False, "--undismiss", help="Forget all dismissals so those flags are raised again."),
 ):
     """Review sets that look like data-entry errors: swap, edit, or dismiss each."""
     state = _state(ctx)
@@ -1135,6 +1137,21 @@ def check(
     store = state.store
     if not store.workout_count():
         console.print("No workouts yet. Run [bold]fitness import FILE[/bold] first.")
+        return
+    if show_dismissed:
+        dismissed_groups = outliers.group(store.dismissed_flags())
+        if not dismissed_groups:
+            console.print("No dismissed flags.")
+            return
+        for i, g in enumerate(dismissed_groups, start=1):
+            _print_flag_group(console, g, i, len(dismissed_groups))
+            console.print()
+        console.print("[dim]Raise them again with: fitness check --undismiss[/dim]")
+        return
+    if undismiss:
+        n = store.undismiss_flags()
+        console.print(f"Forgot {_plural(n, 'dismissal')}; those flags will be raised again." if n
+                      else "No dismissed flags.")
         return
     groups = outliers.group(store.open_flags())
     dismissed = len(store.dismissed_flag_keys())

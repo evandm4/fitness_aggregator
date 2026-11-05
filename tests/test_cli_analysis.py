@@ -8,7 +8,8 @@ from helpers import REAL_EXPORT, workout_rows, write_export
 
 
 def day(n_days_ago: int, hour: int = 10) -> str:
-    return (datetime.now() - timedelta(days=n_days_ago)).replace(hour=hour, minute=0, second=0).strftime("%Y-%m-%d %H:%M:%S")
+    when = (datetime.now() - timedelta(days=n_days_ago)).replace(hour=hour, minute=0, second=0)
+    return when.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def bench(when, sets, name="Push 1", duration="1h"):
@@ -43,7 +44,8 @@ def run(tmp_path, monkeypatch):
 
 def test_import_reports_flags(tmp_path, monkeypatch):
     monkeypatch.setenv("COLUMNS", "200")
-    r = CliRunner().invoke(app, ["--db", str(tmp_path / "x.db"), "import", str(write_export(tmp_path / "e.csv", *EXPORT))])
+    export = write_export(tmp_path / "e.csv", *EXPORT)
+    r = CliRunner().invoke(app, ["--db", str(tmp_path / "x.db"), "import", str(export)])
     assert "2 sets flagged as possible data-entry errors. Review with fitness check." in r.output
 
 
@@ -156,9 +158,19 @@ def test_real_export_check_and_fix(tmp_path, monkeypatch):
     monkeypatch.setenv("COLUMNS", "200")
     runner = CliRunner()
     db = str(tmp_path / "real.db")
-    invoke = lambda *a, **k: runner.invoke(app, ["--db", db, *a], **k)
+    def invoke(*a, **k):
+        return runner.invoke(app, ["--db", db, *a], **k)
     assert "3 sets flagged" in invoke("import", str(REAL_EXPORT)).output
     r = invoke("check", input="s\n")
     assert "Swapped weight and reps on 3 Preacher Curl (Machine) sets, 2026-06-04 13:53" in r.output
     r = invoke("history", "Preacher Curl (Machine)")
     assert "2026-06-04 *" in r.output and "80 lb × 8" in r.output
+
+
+def test_check_dismissed_and_undismiss(run):
+    assert "No dismissed flags." in run("check", "--dismissed").output
+    run("check", input="i\n")
+    r = run("check", "--dismissed")
+    assert "Preacher Curl (Machine)" in r.output and "fitness check --undismiss" in r.output
+    assert "Forgot 2 dismissals" in run("check", "--undismiss").output
+    assert "2 sets in 1 exercise entry" in run("check", "--list").output

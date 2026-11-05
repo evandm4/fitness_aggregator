@@ -8,7 +8,8 @@ OLD = [workout_rows(f"2026-08-{d:02d} 10:00:00", exercises=(("Hip Abductor (Mach
        for d, w in ((4, 145), (8, 150), (12, 160))]
 NEW = [workout_rows(f"2026-08-{d:02d} 10:00:00", exercises=(("Hip Abductor 2 (Machine)", ((205, r),)),))
        for d, r in ((22, 12), (25, 14), (28, 14))]
-ROWS = [workout_rows("2026-08-30 10:00:00", exercises=(("Row (Machine)", ((100, 10),)), ("Row (Machine 2)", ((90, 10),)),
+ROWS = [workout_rows("2026-08-30 10:00:00", exercises=(("Row (Machine)", ((100, 10),)),
+                                                        ("Row (Machine 2)", ((90, 10),)),
                                                         ("Row (Machine 3)", ((80, 10),)))),
         workout_rows("2026-08-31 10:00:00", exercises=(("Plank", ()),))]
 PLANKS = ('2026-09-01 10:00:00,"W",1h,"Plank",1,0,0.0,0,60.0,"","",\n'
@@ -119,7 +120,8 @@ def test_raw_ignores_merges(run):
 def test_real_export_review(tmp_path, monkeypatch):
     monkeypatch.setenv("COLUMNS", "200")
     db = str(tmp_path / "real.db")
-    invoke = lambda *a, **k: CliRunner().invoke(app, ["--db", db, *a], **k)
+    def invoke(*a, **k):
+        return CliRunner().invoke(app, ["--db", db, *a], **k)
     assert "8 groups of similar exercises to review" in invoke("import", str(REAL_EXPORT)).output
     r = invoke("merge", "review", input="s\no\n\n\nq\n")
     assert "Hip Abductor 2 (Machine) combined into Hip Abductor (Machine) with -50 lb offset" in r.output
