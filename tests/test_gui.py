@@ -121,11 +121,11 @@ def _session_row(win, day: str) -> int:
 def test_every_tab_is_populated(make_window):
     w = make_window()
     assert [w.tabs.tabText(i) for i in range(w.tabs.count())] == [
-        "Overview", "Workouts", "Exercises", "PRs", "Charts", "Muscles", "Bodyweight", "Corrections", "Review (11)"]
+        "Overview", "Workouts", "Exercises", "PRs", "Charts", "Muscles", "Bodyweight", "Corrections", "Review (14)"]
     assert w.stack.currentWidget() is w.tabs
     assert w.overview.cards["Sessions"].text() == "103"
     assert w.overview.cards["Total volume"].text().endswith("lb")
-    assert "3" in w.overview.flags_label.text() and "8" in w.overview.groups_label.text()
+    assert "<b>3</b>" in w.overview.flags_label.text() and "<b>11</b>" in w.overview.groups_label.text()
     assert w.overview.prs_model.rowCount() > 0
     assert w.overview.chart.figure is not None
     assert w.workouts.model.rowCount() == 103
@@ -134,7 +134,7 @@ def test_every_tab_is_populated(make_window):
     assert w.prs.recent_model.rowCount() > 0
     assert w.corrections.model.rowCount() == 3
     assert w.review.flags_model.rowCount() == 3
-    assert w.review.groups_model.rowCount() == 8
+    assert w.review.groups_model.rowCount() == 11
 
 
 @needs_export
@@ -230,7 +230,7 @@ def test_combine_hip_abductor_with_offset(make_window):
     assert "Recorded correction" in message
     merge = w.controller.store.active_merges()["Hip Abductor 2 (Machine)"]
     assert (merge.into, merge.offset) == ("Hip Abductor (Machine)", -50)
-    assert w.review.groups_model.rowCount() == 7
+    assert w.review.groups_model.rowCount() == 10
     names = {r["exercise"] for r in w.exercises.model.rows}
     assert "Hip Abductor 2 (Machine)" not in names
     w.exercises.select_exercise("Hip Abductor (Machine)")
@@ -246,7 +246,7 @@ def test_combine_rejects_bad_adjustment_and_keep_separate(make_window):
     assert w.review.combine(True, adjustments={"Crunch (Machine)": "lots"}) is None
     assert "adjustment" in dialogs.errors[-1]
     assert "Keeping" in w.review.keep_separate(index)
-    assert w.review.groups_model.rowCount() == 7
+    assert w.review.groups_model.rowCount() == 10
 
 
 @needs_export

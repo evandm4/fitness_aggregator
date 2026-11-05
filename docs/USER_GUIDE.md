@@ -333,7 +333,19 @@ If you installed the `gui` extra:
 fitness gui                  # or: fitness-gui
 ```
 
-It reads the same database and settings as the command line, and has tabs for an overview, workouts, exercise history with a progress chart, PRs, the corrections log (revert/restore), and a **Review** tab for data-entry flags and similar exercises. Newer versions add tabs for charts, muscle groups and bodyweight. **File → Import Strong export…** shows what will change before importing.
+It reads the same database and settings as the command line and draws the same charts. Tabs:
+
+- **Overview**: headline stats, recent PRs, and how many flags and similar-exercise groups are waiting.
+- **Workouts**: sessions, with each one's sets and the corrections applied to it.
+- **Exercises**: searchable list; history table and progress chart (pick the metric).
+- **PRs**: current bests and the last 30 days' PRs.
+- **Charts**: any of the `fitness plot` charts, with **Save as…** (PNG, SVG, PDF).
+- **Muscles**: weekly hard sets per muscle (under 10 amber, over 20 purple) and the chart.
+- **Bodyweight**: stored Apple Health entries and a chart.
+- **Corrections**: the log, with Revert and Restore.
+- **Review**: data-entry flags (swap, edit, dismiss) and similar exercises (combine, with an editable suggested offset, or keep separate).
+
+**File → Import Strong export…** and **Import Apple Health export…** show what will change before importing. Shortcuts: Ctrl+I import, F5 refresh, Ctrl+F find an exercise, Ctrl+S save the current chart. Data reloads in the background, so the window stays responsive. An empty database shows a welcome screen explaining how to import.
 
 ![Exercises tab](images/gui_exercises.png)
 

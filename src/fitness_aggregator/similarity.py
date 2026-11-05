@@ -62,6 +62,16 @@ def _contrast(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
     return any(pair & only_a and pair & only_b for pair in CONTRASTS)
 
 
+def _base_tokens(name: str) -> tuple[str, ...]:
+    """Tokens of the name before any "(equipment)" part."""
+    return tokens(name.split("(", 1)[0])
+
+
+def _same_base_one_unlabelled(a: str, b: str) -> bool:
+    """Same movement where one name lists no equipment: "Leg Press" vs "Leg Press 2 (Machine)"."""
+    return ("(" in a) != ("(" in b) and bool(_base_tokens(a)) and _base_tokens(a) == _base_tokens(b)
+
+
 def _display_order(name: str) -> str:
     """Sort so a base name comes before its numbered variants: Row (Machine) before Row (Machine 2)."""
     return re.sub(r"[()\-]", " ", name.lower())
@@ -92,7 +102,7 @@ def find_candidates(names: Iterable[str], separate: set[frozenset[str]] = frozen
     for a, b in itertools.combinations(sorted(singles), 2):
         ta, tb = tokens(a), tokens(b)
         ratio = difflib.SequenceMatcher(None, " ".join(ta), " ".join(tb)).ratio()
-        if ratio >= FUZZY_THRESHOLD and not _contrast(ta, tb):
+        if (ratio >= FUZZY_THRESHOLD and not _contrast(ta, tb)) or _same_base_one_unlabelled(a, b):
             groups.append(CandidateGroup(sorted([a, b], key=_display_order), POSSIBLE))
 
     undecided = [g for g in groups if any(p not in separate for p in g.pairs)]

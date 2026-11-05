@@ -122,7 +122,7 @@ def test_real_export_review(tmp_path, monkeypatch):
     db = str(tmp_path / "real.db")
     def invoke(*a, **k):
         return CliRunner().invoke(app, ["--db", db, *a], **k)
-    assert "8 groups of similar exercises to review" in invoke("import", str(REAL_EXPORT)).output
+    assert "11 groups of similar exercises to review" in invoke("import", str(REAL_EXPORT)).output
     r = invoke("merge", "review", input="s\no\n\n\nq\n")
     assert "Hip Abductor 2 (Machine) combined into Hip Abductor (Machine) with -50 lb offset" in r.output
     assert "21 sessions" in invoke("history", "Hip Abductor (Machine)").output

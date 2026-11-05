@@ -48,11 +48,11 @@ Global options `--db PATH` and `--config PATH` go before the command (`fitness -
 
 ## Desktop app
 
-`pip install -e '.[gui]'`, then `fitness gui` (or `fitness-gui`). It uses the same database and settings as the CLI, with tabs for an overview, workouts, exercise history and progress charts, PRs, the corrections log, and a Review tab for flags and similar exercises. Newer versions add charts, muscle-group and bodyweight tabs.
+`pip install -e '.[gui]'`, then `fitness gui` (or `fitness-gui`). It uses the same database, settings and charts as the CLI, with tabs for an overview, workouts, exercise history with a progress chart, PRs, every chart (with Save as PNG/SVG/PDF), weekly sets per muscle, bodyweight, the corrections log (revert/restore), and a Review tab for data-entry flags and similar exercises. File → Import works for both Strong and Apple Health exports, previewing the changes first. Shortcuts: Ctrl+I import, F5 refresh, Ctrl+F find an exercise, Ctrl+S save the current chart.
 
 ![Exercises tab: history and progress chart](docs/images/gui_exercises.png)
 
-More screenshots: [overview](docs/images/gui_overview.png), [review](docs/images/gui_review.png).
+More screenshots: [overview](docs/images/gui_overview.png), [charts](docs/images/gui_charts.png), [muscles](docs/images/gui_muscles.png).
 
 ## Charts
 

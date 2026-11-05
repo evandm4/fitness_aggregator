@@ -32,39 +32,5 @@ jobs:
         # GUI tests skip themselves when PySide6 isn't installed, so CI needs no Qt.
         run: pytest -q
 
-      - name: Lint (files that are lint-clean; keep them that way)
-        run: |
-          ruff check \
-            src/fitness_aggregator/__init__.py \
-            src/fitness_aggregator/bodyweight.py \
-            src/fitness_aggregator/cli_export.py \
-            src/fitness_aggregator/corrections.py \
-            src/fitness_aggregator/fixes.py \
-            src/fitness_aggregator/importers \
-            src/fitness_aggregator/merges.py \
-            src/fitness_aggregator/models.py \
-            src/fitness_aggregator/outliers.py \
-            src/fitness_aggregator/sessions.py \
-            src/fitness_aggregator/settings.py \
-            src/fitness_aggregator/similarity.py \
-            tests/conftest.py \
-            tests/helpers.py \
-            tests/test_catalog.py \
-            tests/test_cli.py \
-            tests/test_cli_export.py \
-            tests/test_corrections.py \
-            tests/test_fixes.py \
-            tests/test_merges.py \
-            tests/test_outliers.py \
-            tests/test_real_export.py \
-            tests/test_sessions.py \
-            tests/test_settings.py \
-            tests/test_similarity.py \
-            tests/test_store_fixes.py \
-            tests/test_store_hardening.py \
-            tests/test_store_merges.py \
-            tests/test_strong_csv.py
-
-      - name: Lint (whole project, report only)
-        continue-on-error: true
+      - name: Lint
         run: ruff check --output-format github .

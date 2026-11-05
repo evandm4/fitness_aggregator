@@ -150,3 +150,15 @@ def test_three_name_group_with_one_separate_pair_still_offers_the_rest():
 def test_round_to_rounds_halves_away_from_zero(x, expected):
     from fitness_aggregator.similarity import round_to
     assert round_to(x) == expected
+
+
+def test_same_base_name_without_equipment_is_a_possible_match():
+    groups = find_candidates(["Leg Press", "Leg Press 2 (Machine)", "Squat (Barbell)", "Squat"])
+    assert [(g.tier, g.names) for g in groups] == [
+        (POSSIBLE, ["Leg Press", "Leg Press 2 (Machine)"]),
+        (POSSIBLE, ["Squat", "Squat (Barbell)"]),
+    ]
+
+
+def test_both_labelled_with_different_equipment_is_not_a_match():
+    assert find_candidates(["Bicep Curl (Cable)", "Bicep Curl (Machine)"]) == []
