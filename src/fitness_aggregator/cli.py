@@ -10,14 +10,23 @@ from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
+import math
+
+import pandas as pd
+
 from . import corrections as corr
+from . import metrics, outliers
 from . import settings as settings_mod
+from .bodyweight import Bodyweight
+from .catalog import ASSISTED, TIMED, UNLOADED
 from .corrections import Correction, ReconcileResult, format_duration
+from .fixes import describe_set
 from .importers import StrongParseError, parse_strong_csv
-from .models import SetType, WorkoutSet
+from .models import ExerciseEntry, SetType, Workout, WorkoutSet
 from .sessions import Session, workout_key
 from .settings import Settings
 from .store import ImportPlan, Store, default_db_path
@@ -37,7 +46,9 @@ app.add_typer(config_app, name="config")
 TYPE_LABELS = {
     corr.WORKOUT_MERGE: ("workout merged", "workouts merged"),
     corr.DURATION_SUSPECT: ("duration excluded", "durations excluded"),
+    corr.VALUE_FIX: ("set fix", "set fixes"),
 }
+PR_LABELS = {"e1rm": "e1RM", "weight": "Heaviest", "rep": "Rep PR", "seconds": "Longest hold", "reps": "Most reps"}
 SET_LABELS = {SetType.WARMUP: "W", SetType.DROP: "D", SetType.FAILURE: "F"}
 
 
@@ -121,6 +132,13 @@ def _print_reconcile(console: Console, result: ReconcileResult, store: Store) ->
         console.print(f"  [yellow]~[/yellow] #{current.id} updated{note}: {p.reason}")
     for current in result.obsolete:
         console.print(f"  [dim]-[/dim] #{current.id} no longer applies: {current.reason}")
+    for current in result.stale:
+        console.print(
+            f"  [red]![/red] #{current.id} is stale (the imported data changed, so it's no longer applied): "
+            f"{current.reason}"
+        )
+    for current in result.unstale:
+        console.print(f"  [green]↺[/green] #{current.id} matches the data again and is applied: {current.reason}")
 
 
 def _print_parse_summary(console: Console, plan: ImportPlan) -> None:
@@ -141,18 +159,27 @@ def _print_parse_summary(console: Console, plan: ImportPlan) -> None:
 
 
 def _set_row(s: WorkoutSet, show_rpe: bool) -> list[str]:
-    label = str(s.number) if s.set_type is SetType.NORMAL else SET_LABELS[s.set_type]
+    label = _set_label(s)
     if s.seconds and not s.weight and not s.reps:
         weight, amount = "", f"{_num(s.seconds)} s"
     elif s.weight:
         weight, amount = f"{_num(s.weight)} lb", f"× {_num(s.reps)}"
     else:
         weight, amount = "—", f"× {_num(s.reps)}"
+    notes = s.notes
+    if s.corrected_from:
+        amount += " [yellow]*[/yellow]"
+        was = f"was {describe_set(s, s.corrected_from)} (correction #{', #'.join(map(str, s.correction_ids))})"
+        notes = f"{notes}; {was}" if notes else was
     row = [label, weight, amount, format_duration_seconds(s.rest_seconds)]
     if show_rpe:
         row.append("" if s.rpe is None else f"RPE {_num(s.rpe)}")
-    row.append(s.notes)
+    row.append(notes)
     return row
+
+
+def _set_label(s: WorkoutSet) -> str:
+    return str(s.number) if s.set_type is SetType.NORMAL else SET_LABELS[s.set_type]
 
 
 def format_duration_seconds(seconds: float | None) -> str:
@@ -238,6 +265,16 @@ def import_cmd(
         f"Corrections applied: {_correction_counts(store.corrections())}. "
         "See [bold]fitness corrections[/bold]."
     )
+    _print_flag_count(console, store)
+
+
+def _print_flag_count(console: Console, store: Store) -> None:
+    flags = store.open_flags()
+    if flags:
+        console.print(
+            f"[yellow]{_plural(len(flags), 'set')} flagged as possible data-entry errors.[/yellow] "
+            "Review with [bold]fitness check[/bold]."
+        )
 
 
 # --- workouts ---------------------------------------------------------------
@@ -460,6 +497,548 @@ def corrections_restore(ctx: typer.Context, correction_id: int = typer.Argument(
     _revert_or_restore(_state(ctx), correction_id, corr.ACTIVE)
 
 
+# --- analysis helpers -------------------------------------------------------
+
+FORMULA_HELP = "e1RM formula: epley or brzycki."
+RAW_HELP = "Ignore corrections (no merging, no set fixes)."
+WARMUP_HELP = "Count warm-up sets in volume and set totals (never in PRs)."
+
+
+@dataclass
+class Analysis:
+    sessions: list[Session]
+    df: pd.DataFrame
+    bodyweight: Bodyweight
+
+
+def _analysis(state: State, *, raw: bool = False, include_warmups: bool = False) -> Analysis:
+    store = state.store
+    sessions = store.sessions(raw=raw)
+    if not sessions:
+        state.console.print("No workouts yet. Run [bold]fitness import FILE[/bold] first.")
+        raise typer.Exit(0)
+    bodyweight = Bodyweight(state.settings.bodyweight_lb)
+    df = metrics.sets_frame(sessions, store.catalog(), bodyweight, include_warmups=include_warmups)
+    return Analysis(sessions, df, bodyweight)
+
+
+def _check_formula(console: Console, formula: str) -> None:
+    if formula not in metrics.FORMULAS:
+        _fail(console, f"unknown formula {formula!r}; use {' or '.join(metrics.FORMULAS)}.")
+
+
+def _resolve_exercise(console: Console, query: str, names) -> str:
+    names = sorted(set(names))
+    exact = [n for n in names if n.lower() == query.lower()]
+    if exact:
+        return exact[0]
+    partial = [n for n in names if query.lower() in n.lower()]
+    if len(partial) == 1:
+        return partial[0]
+    if not partial:
+        _fail(console, f"no exercise matches {query!r}. See [bold]fitness exercises[/bold].")
+    shown = ", ".join(partial[:8]) + (", …" if len(partial) > 8 else "")
+    _fail(console, f"{query!r} matches {len(partial)} exercises ({shown}); be more specific.")
+
+
+def _bodyweight_note(console: Console, df: pd.DataFrame, bodyweight: Bodyweight) -> None:
+    if bodyweight.uses_placeholder and (df["kind"] == ASSISTED).any():
+        console.print(
+            f"[dim]Assisted-lift loads use placeholder bodyweight {_num(bodyweight.placeholder_lb)} lb "
+            "(load = bodyweight − assistance). Change with: fitness config set bodyweight_lb N[/dim]"
+        )
+
+
+def _date(ts) -> str:
+    return "" if ts is None or pd.isna(ts) else f"{pd.Timestamp(ts):%Y-%m-%d}"
+
+
+def _lb(x, decimals: int | None = None) -> str:
+    if x is None or (isinstance(x, float) and math.isnan(x)):
+        return "—"
+    return f"{x:,.{decimals}f} lb" if decimals is not None else f"{x:,g} lb"
+
+
+def _parse_window(console: Console, text: str) -> pd.Timedelta:
+    text = text.strip().lower()
+    units = {"d": 1, "w": 7, "m": 30, "y": 365}
+    if len(text) < 2 or text[-1] not in units or not text[:-1].isdigit():
+        _fail(console, f"expected a window like 30d, 4w, or 3m; got {text!r}.")
+    return pd.Timedelta(days=int(text[:-1]) * units[text[-1]])
+
+
+def _filter_dates(df: pd.DataFrame, column: str, since: Optional[str], until: Optional[str]) -> pd.DataFrame:
+    if since:
+        df = df[df[column] >= pd.Timestamp(_parse_date(since))]
+    if until:
+        df = df[df[column] < pd.Timestamp(_parse_date(until)) + pd.Timedelta(days=1)]
+    return df
+
+
+def _pr_value(pr_type: str, value) -> str:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return "—"
+    if pr_type == "e1rm":
+        return _lb(value, 0)
+    if pr_type == "seconds":
+        return f"{value:g} s"
+    if pr_type == "reps":
+        return f"{value:g} reps"
+    return _lb(value)
+
+
+# --- history ----------------------------------------------------------------
+
+@app.command()
+def history(
+    ctx: typer.Context,
+    exercise: str = typer.Argument(..., help="Exercise name (or a unique part of it)."),
+    since: Optional[str] = typer.Option(None, "--since", help="Only sessions on or after this date."),
+    formula: str = typer.Option("epley", "--formula", help=FORMULA_HELP),
+    raw: bool = typer.Option(False, "--raw", help=RAW_HELP),
+    include_warmups: bool = typer.Option(False, "--include-warmups", help=WARMUP_HELP),
+):
+    """Session-by-session history of one exercise."""
+    state = _state(ctx)
+    console = state.console
+    _check_formula(console, formula)
+    a = _analysis(state, raw=raw, include_warmups=include_warmups)
+    name = _resolve_exercise(console, exercise, a.df["exercise"])
+    hist = metrics.exercise_history(a.df, name, formula)
+    events = metrics.pr_events(a.df[a.df["exercise"] == name], formula)
+    prs_by_session = events.groupby("session")["pr_type"].apply(list).to_dict() if not events.empty else {}
+    hist = _filter_dates(hist, "session", since, None)
+    kind = hist["kind"].iloc[0] if not hist.empty else a.df.loc[a.df["exercise"] == name, "kind"].iloc[0]
+
+    console.print(f"[bold]{name}[/bold]  [dim]({kind})[/dim]")
+    if hist.empty:
+        console.print("No sessions in that range.")
+        return
+    table = Table(box=None, header_style="bold", pad_edge=False)
+    if kind == TIMED:
+        cols = ["Date", "Best hold", "Total", "Sets", "PRs"]
+    elif kind == UNLOADED:
+        cols = ["Date", "Most reps", "Total reps", "Sets", "PRs"]
+    else:
+        cols = ["Date", "Top set", "e1RM", "Sets", "Reps", "Volume", "PRs"]
+    for c in cols:
+        table.add_column(c, justify="left" if c in ("Date", "Top set", "PRs") else "right")
+
+    for r in hist.itertuples():
+        date = _date(r.session) + (" [yellow]*[/yellow]" if r.corrected else "")
+        types = prs_by_session.get(r.session, [])
+        counts = Counter(types)
+        prs = ", ".join(
+            f"{PR_LABELS[t]} ×{n}" if n > 1 else PR_LABELS[t] for t, n in counts.items()
+        )
+        prs = f"[green]{prs}[/green]" if prs else ""
+        if kind == TIMED:
+            table.add_row(date, f"{r.max_seconds:g} s", f"{r.total_seconds:g} s", str(r.sets), prs)
+        elif kind == UNLOADED:
+            table.add_row(date, f"{r.max_reps:g}", f"{r.reps:g}", str(r.sets), prs)
+        else:
+            if math.isnan(r.top_load):
+                top = "—"
+            elif kind == ASSISTED:
+                top = f"{_num(r.top_weight)} lb assist × {_num(r.top_reps)} [dim](= {_num(r.top_load)} lb)[/dim]"
+            else:
+                top = f"{_num(r.top_load)} lb × {_num(r.top_reps)}"
+            e1 = "—" if math.isnan(r.e1rm) else f"{r.e1rm:,.0f}"
+            table.add_row(date, top, e1, str(r.sets), f"{r.reps:g}", f"{r.volume:,.0f}", prs)
+    console.print(table)
+
+    footer = [f"{_plural(len(hist), 'session')}"]
+    if kind not in (TIMED, UNLOADED) and hist["e1rm"].notna().any():
+        best = hist.loc[hist["e1rm"].idxmax()]
+        footer.append(f"best e1RM {best['e1rm']:,.0f} lb ({_num(best['e1rm_load'])} × {_num(best['e1rm_reps'])}, {_date(best['session'])})")
+    console.print("[dim]" + "; ".join(footer) + f". e1RM: {formula.title()}, sets of 1–{metrics.E1RM_MAX_REPS} reps.[/dim]")
+    _bodyweight_note(console, a.df[a.df["exercise"] == name], a.bodyweight)
+    if hist["corrected"].any():
+        fixes_for = [c for c in state.store.corrections(type_=corr.VALUE_FIX, statuses=[corr.ACTIVE])
+                     if c.target.get("exercise") == name]
+        console.print("[yellow]*[/yellow] [dim]includes corrected sets:[/dim]")
+        for c in fixes_for:
+            console.print(f"  [dim]#{c.id} {c.reason}[/dim]")
+
+
+# --- prs --------------------------------------------------------------------
+
+@app.command()
+def prs(
+    ctx: typer.Context,
+    exercise: Optional[str] = typer.Argument(None, help="Show rep maxes and PR timeline for one exercise."),
+    recent: Optional[str] = typer.Option(None, "--recent", help="PRs set within a window, e.g. 30d, 4w, 3m."),
+    sort: str = typer.Option("name", "--sort", help="name, e1rm, or recent."),
+    formula: str = typer.Option("epley", "--formula", help=FORMULA_HELP),
+    raw: bool = typer.Option(False, "--raw", help=RAW_HELP),
+):
+    """Personal records: current bests, recent PRs, or one exercise in detail."""
+    state = _state(ctx)
+    console = state.console
+    _check_formula(console, formula)
+    a = _analysis(state, raw=raw)
+
+    if exercise:
+        name = _resolve_exercise(console, exercise, a.df["exercise"])
+        _prs_for_exercise(console, a, name, formula)
+        return
+
+    if recent:
+        window = _parse_window(console, recent)
+        events = metrics.pr_events(a.df, formula)
+        latest = a.df["session"].max()
+        cutoff = pd.Timestamp(datetime.now()) - window
+        events = events[events["session"] >= cutoff]
+        if events.empty:
+            console.print(f"No PRs in the last {recent} (most recent session: {_date(latest)}).")
+            return
+        table = Table(box=None, header_style="bold", pad_edge=False)
+        for c in ("Date", "Exercise", "PR", "Set", "New", "Previous"):
+            table.add_column(c, justify="right" if c in ("New", "Previous") else "left")
+        for r in events.itertuples():
+            table.add_row(_date(r.session), r.exercise, PR_LABELS[r.pr_type], r.detail,
+                          _pr_value(r.pr_type, r.value), _pr_value(r.pr_type, r.previous))
+        console.print(table)
+        console.print(f"[dim]{_plural(len(events), 'PR')} across {events['exercise'].nunique()} exercises "
+                      f"since {cutoff:%Y-%m-%d}.[/dim]")
+        _bodyweight_note(console, a.df[a.df["exercise"].isin(events["exercise"])], a.bodyweight)
+        return
+
+    bests = metrics.current_bests(a.df, formula)
+    if sort not in ("name", "e1rm", "recent"):
+        _fail(console, "sort by name, e1rm, or recent.")
+    bests = bests.sort_values(
+        {"name": "exercise", "e1rm": "e1rm", "recent": "last"}[sort],
+        ascending=(sort == "name"), na_position="last",
+    )
+    table = Table(box=None, header_style="bold", pad_edge=False)
+    for c in ("Exercise", "Best e1RM", "Set", "Date", "Heaviest", "Date ", "Sessions"):
+        table.add_column(c, justify="right" if c in ("Best e1RM", "Sessions") else "left")
+    for r in bests.itertuples():
+        if r.kind == TIMED:
+            table.add_row(r.exercise, "—", f"{r.max_seconds:g} s hold", "", "", "", str(r.sessions))
+        elif r.kind == UNLOADED:
+            table.add_row(r.exercise, "—", f"{r.max_reps:g} reps", "", "", "", str(r.sessions))
+        else:
+            e1 = "—" if math.isnan(r.e1rm) else f"{r.e1rm:,.0f}"
+            table.add_row(r.exercise, e1, r.e1rm_set, _date(r.e1rm_date), r.heaviest_set,
+                          _date(r.heaviest_date), str(r.sessions))
+    console.print(table)
+    console.print(f"[dim]{_plural(len(bests), 'exercise')}. Loads in lb. e1RM: {formula.title()}, sets of "
+                  f"1–{metrics.E1RM_MAX_REPS} reps. Details: fitness prs EXERCISE. Recent: fitness prs --recent 30d[/dim]")
+    _bodyweight_note(console, a.df, a.bodyweight)
+
+
+def _prs_for_exercise(console: Console, a: Analysis, name: str, formula: str) -> None:
+    d = a.df[a.df["exercise"] == name]
+    kind = d["kind"].iloc[0]
+    console.print(f"[bold]{name}[/bold]  [dim]({kind})[/dim]")
+    if kind not in (TIMED, UNLOADED):
+        maxes = metrics.rep_maxes(d, name)
+        if not maxes.empty:
+            table = Table(title="Best load for at least N reps", title_justify="left", box=None,
+                          header_style="bold", pad_edge=False)
+            for c in ("Reps", "Load", "Set", "Date"):
+                table.add_column(c, justify="right" if c in ("Reps", "Load") else "left")
+            for r in maxes.itertuples():
+                done = (f"{_num(r.weight)} lb assist × {_num(r.actual_reps)}" if kind == ASSISTED
+                        else f"{_num(r.load)} × {_num(r.actual_reps)}")
+                table.add_row(str(r.reps), _lb(r.load), done, _date(r.session))
+            console.print(table)
+    events = metrics.pr_events(d, formula)
+    if events.empty:
+        console.print("No PRs since the first session yet.")
+    else:
+        table = Table(title="PR timeline", title_justify="left", box=None, header_style="bold", pad_edge=False)
+        for c in ("Date", "PR", "Set", "New", "Previous"):
+            table.add_column(c, justify="right" if c in ("New", "Previous") else "left")
+        for r in events.itertuples():
+            table.add_row(_date(r.session), PR_LABELS[r.pr_type], r.detail,
+                          _pr_value(r.pr_type, r.value), _pr_value(r.pr_type, r.previous))
+        console.print(table)
+        console.print(f"[dim]{_plural(len(events), 'PR')}; the first session is the baseline.[/dim]")
+    _bodyweight_note(console, d, a.bodyweight)
+
+
+# --- stats ------------------------------------------------------------------
+
+@app.command()
+def stats(
+    ctx: typer.Context,
+    by: str = typer.Option("week", "--by", help="week or month."),
+    last: int = typer.Option(12, "--last", "-n", help="Show the most recent N periods."),
+    all_: bool = typer.Option(False, "--all", help="Show every period."),
+    since: Optional[str] = typer.Option(None, "--since", help="Only sessions on or after this date."),
+    until: Optional[str] = typer.Option(None, "--until", help="Only sessions on or before this date."),
+    raw: bool = typer.Option(False, "--raw", help=RAW_HELP),
+    include_warmups: bool = typer.Option(False, "--include-warmups", help=WARMUP_HELP),
+):
+    """Training summary: frequency, consistency, volume, and PRs over time."""
+    state = _state(ctx)
+    console = state.console
+    if by not in ("week", "month"):
+        _fail(console, "--by must be week or month.")
+    a = _analysis(state, raw=raw, include_warmups=include_warmups)
+    events = metrics.pr_events(a.df)  # PRs need the full history, then get filtered
+    sdf = _filter_dates(metrics.sessions_frame(a.sessions), "session", since, until)
+    df = _filter_dates(a.df, "session", since, until)
+    events = _filter_dates(events, "session", since, until)
+    if sdf.empty:
+        console.print("No sessions in that range.")
+        return
+
+    c = metrics.consistency(sdf, datetime.now())
+    console.print(
+        f"[bold]{_plural(c['sessions'], 'session')}[/bold] from {_when(c['first'])} to {_when(c['last'])}  ·  "
+        f"{c['per_week']:.1f} per week  ·  {c['avg_gap_days']:.1f} days between sessions on average"
+    )
+    gap = f"Longest gap: {_plural(c['longest_gap_days'], 'day')}"
+    if c["longest_gap_from"] is not None and c["longest_gap_days"]:
+        gap += f" ({_date(c['longest_gap_from'])} → {_date(c['longest_gap_to'])})"
+    console.print(
+        f"{gap}  ·  Last session {_plural(c['days_since_last'], 'day')} ago  ·  "
+        f"Weekly streak: {c['current_week_streak']} (longest {c['longest_week_streak']})"
+    )
+    console.print(
+        f"Totals: {df['volume'].sum():,.0f} lb volume, {_plural(len(df), 'set')}, "
+        f"{df['reps'].sum():,.0f} reps, {_plural(len(events), 'PR')}\n"
+    )
+
+    periods = metrics.period_stats(sdf, df, events, by)
+    total = len(periods)
+    if not all_ and last > 0:
+        periods = periods.tail(last)
+    table = Table(box=None, header_style="bold", pad_edge=False)
+    for col in ("Week of" if by == "week" else "Month", "Sessions", "Time", "Avg", "Sets", "Reps", "Volume (lb)", "PRs"):
+        table.add_column(col, justify="left" if col in ("Week of", "Month") else "right")
+    for r in periods.itertuples():
+        label = f"{r.period.start_time:%Y-%m-%d}" if by == "week" else f"{r.period.start_time:%b %Y}"
+        time = "—" if pd.isna(r.duration_min) else format_duration(timedelta(minutes=r.duration_min))
+        avg = "—" if pd.isna(r.avg_duration_min) else format_duration(timedelta(minutes=round(r.avg_duration_min)))
+        dim = "[dim]" if r.sessions == 0 else ""
+        table.add_row(f"{dim}{label}", str(r.sessions), time, avg, str(r.sets), f"{r.reps:,.0f}",
+                      f"{r.volume:,.0f}", str(r.prs) if r.prs else "")
+    console.print(table)
+    if len(periods) != total:
+        console.print(f"[dim]Showing the last {len(periods)} of {total} {by}s (--all for every {by}).[/dim]")
+
+    names = metrics.name_counts(sdf)
+    table = Table(title="\nBy workout name", title_justify="left", box=None, header_style="bold", pad_edge=False)
+    for col in ("Workout", "Sessions", "Per week", "Last"):
+        table.add_column(col, justify="left" if col in ("Workout", "Last") else "right")
+    for r in names.itertuples():
+        table.add_row(r.name, str(r.sessions), f"{r.per_week:.1f}", _date(r.last))
+    console.print(table)
+
+    notes = ["Warm-ups " + ("included in" if include_warmups else "excluded from") + " sets and volume",
+             "time excludes suspect durations"]
+    console.print(f"\n[dim]{'; '.join(notes)}.[/dim]")
+    _bodyweight_note(console, df, a.bodyweight)
+
+
+# --- exercises --------------------------------------------------------------
+
+@app.command()
+def exercises(
+    ctx: typer.Context,
+    search: Optional[str] = typer.Option(None, "--search", "-s", help="Only names containing this text."),
+    sort: str = typer.Option("count", "--sort", help="count, recent, or name."),
+    raw: bool = typer.Option(False, "--raw", help=RAW_HELP),
+):
+    """Every exercise you've logged, with frequency and when you last did it."""
+    state = _state(ctx)
+    console = state.console
+    if sort not in ("count", "recent", "name"):
+        _fail(console, "sort by count, recent, or name.")
+    a = _analysis(state, raw=raw)
+    summary = metrics.exercise_summary(a.df).merge(
+        metrics.current_bests(a.df)[["exercise", "e1rm", "max_seconds", "max_reps"]], on="exercise"
+    )
+    if search:
+        summary = summary[summary["exercise"].str.contains(search, case=False, regex=False)]
+    summary = summary.sort_values(
+        {"count": ["sessions", "exercise"], "recent": ["last", "exercise"], "name": ["exercise"]}[sort],
+        ascending={"count": [False, True], "recent": [False, True], "name": [True]}[sort],
+    )
+    if summary.empty:
+        console.print("No exercises match.")
+        return
+    now = pd.Timestamp(datetime.now()).normalize()
+    table = Table(box=None, header_style="bold", pad_edge=False)
+    for col in ("Exercise", "Kind", "Sessions", "Sets", "First", "Last", "Days ago", "Avg rest", "Best"):
+        table.add_column(col, justify="left" if col in ("Exercise", "Kind", "First", "Last", "Best") else "right")
+    for r in summary.itertuples():
+        if r.kind == TIMED:
+            best = f"{r.max_seconds:g} s"
+        elif r.kind == UNLOADED:
+            best = f"{r.max_reps:g} reps"
+        else:
+            best = "—" if math.isnan(r.e1rm) else f"e1RM {r.e1rm:,.0f}"
+        rest = "" if pd.isna(r.avg_rest) else format_duration_seconds(round(r.avg_rest))
+        days = (now - pd.Timestamp(r.last).normalize()).days
+        table.add_row(r.exercise, "" if r.kind == "loaded" else r.kind, str(r.sessions), str(r.sets),
+                      _date(r.first), _date(r.last), str(days), rest, best)
+    console.print(table)
+    console.print(f"[dim]{_plural(len(summary), 'exercise')}. Sets exclude warm-ups.[/dim]")
+
+
+# --- check & fix ------------------------------------------------------------
+
+def _resolve_set_labels(console: Console, entry: ExerciseEntry, labels: list[str]) -> list[int]:
+    """Turn set labels as shown by `fitness show` (1, 2, W, D, D2, F) into positions."""
+    if not labels:
+        return [s.position for s in entry.sets]
+    positions = []
+    for label in labels:
+        label = label.strip().upper()
+        if label.isdigit():
+            match = [s for s in entry.sets if s.set_type is SetType.NORMAL and s.number == int(label)]
+        elif label[:1] in ("W", "D", "F") and (len(label) == 1 or label[1:].isdigit()):
+            type_ = {"W": SetType.WARMUP, "D": SetType.DROP, "F": SetType.FAILURE}[label[0]]
+            of_type = [s for s in entry.sets if s.set_type is type_]
+            if len(label) == 1 and len(of_type) > 1:
+                _fail(console, f"{entry.name} has {len(of_type)} {label} sets; use {label}1, {label}2, …")
+            index = int(label[1:] or 1)
+            match = of_type[index - 1:index]
+        else:
+            match = []
+        if not match:
+            _fail(console, f"{entry.name} has no set {label!r} in that workout (sets: "
+                  f"{', '.join(_set_label(s) for s in entry.sets)}).")
+        positions.append(match[0].position)
+    return positions
+
+
+@app.command()
+def fix(
+    ctx: typer.Context,
+    when: str = typer.Argument(..., help="Workout start time, e.g. 2026-06-04T13:53 (a date works if unique)."),
+    exercise: str = typer.Argument(..., help="Exercise name in that workout (or a unique part of it)."),
+    sets: list[str] = typer.Option([], "--set", help="Set label as shown by `fitness show` (1, 2, W, D, F). Repeatable; default all sets."),
+    occurrence: int = typer.Option(1, "--occurrence", help="Which entry, if the exercise appears more than once."),
+    swap: bool = typer.Option(False, "--swap-weight-reps", help="Swap weight and reps."),
+    weight: Optional[float] = typer.Option(None, "--weight", help="Set the weight (lb)."),
+    reps: Optional[float] = typer.Option(None, "--reps", help="Set the reps."),
+    seconds: Optional[float] = typer.Option(None, "--seconds", help="Set the hold time."),
+):
+    """Correct set values. The original data is kept; undo with `fitness corrections revert ID`."""
+    state = _state(ctx)
+    console = state.console
+    store = state.store
+    if swap and any(v is not None for v in (weight, reps, seconds)):
+        _fail(console, "use --swap-weight-reps or --weight/--reps/--seconds, not both.")
+    if not swap and all(v is None for v in (weight, reps, seconds)):
+        _fail(console, "say what to change: --swap-weight-reps, --weight, --reps, or --seconds.")
+    workouts = store.find_workouts(when)
+    if not workouts:
+        _fail(console, f"no workout starts at {when!r}. See [bold]fitness workouts[/bold].")
+    if len(workouts) > 1:
+        _fail(console, f"{when!r} matches {len(workouts)} workouts "
+              f"({', '.join(f'{w.started_at:%H:%M}' for w in workouts)}); add the time, e.g. {workout_key(workouts[0].started_at)[:16]}.")
+    workout = workouts[0]
+    name = _resolve_exercise(console, exercise, [e.name for e in workout.exercises])
+    entries = [e for e in workout.exercises if e.name == name]
+    if not 1 <= occurrence <= len(entries):
+        _fail(console, f"{name} appears {len(entries)} time(s) in that workout.")
+    entry = entries[occurrence - 1]
+    positions = _resolve_set_labels(console, entry, sets)
+
+    by_pos = {s.position: s for s in entry.sets}
+    changes = {}
+    for pos in positions:
+        s = by_pos[pos]
+        if swap:
+            changes[pos] = {"weight": s.reps, "reps": s.weight}
+        else:
+            changes[pos] = {f: v for f, v in (("weight", weight), ("reps", reps), ("seconds", seconds)) if v is not None}
+    existing_ids = {c.id for c in store.corrections(type_=corr.VALUE_FIX)}
+    try:
+        c = store.add_value_fix(workout, name, occurrence, changes)
+    except ValueError as exc:
+        _fail(console, str(exc))
+    verb = "Updated" if c.id in existing_ids else "Recorded"
+    console.print(f"{verb} correction #{c.id}: {c.reason}")
+    console.print(f"[dim]Undo with: fitness corrections revert {c.id}[/dim]")
+
+
+@app.command()
+def check(
+    ctx: typer.Context,
+    list_only: bool = typer.Option(False, "--list", help="List flagged sets without asking about them."),
+):
+    """Review sets that look like data-entry errors: swap, edit, or dismiss each."""
+    state = _state(ctx)
+    console = state.console
+    store = state.store
+    if not store.workout_count():
+        console.print("No workouts yet. Run [bold]fitness import FILE[/bold] first.")
+        return
+    groups = outliers.group(store.open_flags())
+    dismissed = len(store.dismissed_flag_keys())
+    if not groups:
+        note = f" ({_plural(dismissed, 'flag')} dismissed earlier.)" if dismissed else ""
+        console.print(f"No likely data-entry errors found.{note}")
+        return
+    total = sum(len(g.flags) for g in groups)
+    verb = "looks" if total == 1 else "look"
+    console.print(f"{_plural(total, 'set')} in {_plural(len(groups), 'exercise entry', 'exercise entries')} "
+                  f"{verb} like data-entry errors.\n")
+
+    for i, g in enumerate(groups, start=1):
+        _print_flag_group(console, g, i, len(groups))
+        if list_only:
+            console.print()
+            continue
+        options = (["s"] if g.swap_plausible else []) + ["e", "i", "k", "q"]
+        menu = ("  [s] swap weight and reps" if g.swap_plausible else "") + \
+               "  [e] edit  [i] not an error (dismiss)  [k] skip  [q] quit"
+        console.print(escape(menu))
+        choice = typer.prompt(">", default="k", show_default=False).strip().lower()
+        while choice not in options:
+            choice = typer.prompt(f"Choose one of {', '.join(options)}", default="k", show_default=False).strip().lower()
+        if choice == "q":
+            break
+        if choice == "k":
+            console.print("[dim]Skipped.[/dim]\n")
+            continue
+        if choice == "i":
+            store.dismiss_flags(f.key for f in g.flags)
+            console.print("[dim]Dismissed; it won't be flagged again.[/dim]\n")
+            continue
+        changes = {}
+        for f in g.flags:
+            s = f.set
+            if choice == "s":
+                changes[s.position] = {"weight": s.reps, "reps": s.weight}
+            else:
+                new_weight = typer.prompt(f"  Set {_set_label(s)} weight (lb)", default=_num(s.weight))
+                new_reps = typer.prompt(f"  Set {_set_label(s)} reps", default=_num(s.reps))
+                try:
+                    changes[s.position] = {"weight": float(new_weight), "reps": float(new_reps)}
+                except ValueError:
+                    _fail(console, "weight and reps must be numbers.")
+        try:
+            c = store.add_value_fix(g.workout, g.entry.name, g.occurrence, changes)
+        except ValueError as exc:
+            console.print(f"[yellow]{exc}[/yellow]\n")
+            continue
+        console.print(f"Recorded correction #{c.id}: {c.reason}\n")
+
+
+def _print_flag_group(console: Console, g: outliers.FlagGroup, i: int, n: int) -> None:
+    console.print(f"[bold]({i}/{n}) {g.entry.name}[/bold] — {_when(g.workout.started_at)} ({g.workout.name})")
+    flagged = {f.set.position: f for f in g.flags}
+    for s in g.entry.sets:
+        line = f"  {_set_label(s):>2}  {describe_set(s)}"
+        if s.position in flagged:
+            console.print(f"[yellow]{line}  ⚠ {flagged[s.position].message}[/yellow]")
+        else:
+            console.print(f"[dim]{line}[/dim]")
+    if g.swap_plausible:
+        swapped = ", ".join(f"{f.set.reps:g} lb × {f.set.weight:g}" for f in g.flags)
+        console.print(f"  Looks like weight and reps were swapped → {swapped}")
+
+
 # --- config -----------------------------------------------------------------
 
 @config_app.command("show")
@@ -486,7 +1065,7 @@ def config_set(ctx: typer.Context, key: str, value: str):
     console.print(f"{key}: {_num(getattr(old, key))} → {_num(getattr(new, key))}")
     state._settings = new
     if key in settings_mod.AFFECTS_AUTO_CORRECTIONS and state.db_path.exists():
-        result = state.store.refresh_auto_corrections(new)
+        result = state.store.refresh_corrections(new)
         if result.changed:
             console.print("Automatic corrections updated:")
             _print_reconcile(console, result, state.store)

@@ -131,7 +131,7 @@ def test_correction_becomes_obsolete_when_workout_deleted_and_returns(store, tmp
 
 def test_settings_change_recomputes_auto_corrections(store, tmp_path):
     do_import(store, write_export(tmp_path / "1.csv", A, B, C))
-    result = store.refresh_auto_corrections(Settings(merge_gap_minutes=2))
+    result = store.refresh_corrections(Settings(merge_gap_minutes=2))
     assert len(result.obsolete) == 1 and len(store.sessions()) == 3
 
 

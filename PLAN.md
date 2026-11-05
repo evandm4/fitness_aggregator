@@ -160,10 +160,10 @@ Each entry records: id, timestamp, type, source (`auto` or `user`), the affected
 | `duration_suspect` | auto | "Duration 14h 7m excluded from duration stats: over 4h, probably a timer left running" |
 | `value_fix` | user | "Swapped weight and reps on 3 Preacher Curl (Machine) sets, 2026-06-04" |
 | `exercise_merge` | user | "Hip Abductor 2 (Machine) combined into Hip Abductor (Machine) with −55 lb offset" |
-| `outlier_flag` | auto | "Reps 80 at 8 lb on a weighted lift: flagged for review, not changed" |
 
 How corrections are reported:
-- **On import:** a summary of what was new and every correction applied, for example "1 workout merged, 2 durations excluded, 1 outlier flagged for review".
+- **On import:** a summary of what was new and every correction applied, for example "1 workout merged, 2 durations excluded", plus how many sets are flagged as possible data-entry errors.
+- **Flags are not corrections.** A flagged set changes nothing, so flags aren't log entries. `fitness check` lists them; each is either fixed (which creates a `value_fix` entry) or dismissed (remembered in a `dismissed_flags` table so it isn't raised again). Flag rules: over 30 reps on a weighted set (swap suggested when the swapped weight fits your usual range), a working set over 2.5× your usual top set, and weight with 0 reps on a normal or drop set (failure sets are exempt, since 0 reps there is a missed attempt).
 - **`fitness corrections`:** the full log, filterable by `--type`, `--auto`/`--user`, `--exercise`, or `--since`. `fitness corrections revert ID` undoes one entry.
 - **In output:** `history` and `show` mark corrected rows (for example with `*`) and list the reasons beneath the table. Plots built from corrected data get a small footnote such as "Includes 1 exercise merge (−55 lb offset); see `fitness corrections`."
 
@@ -299,7 +299,7 @@ Entry point: `fitness`. Global options: `--db PATH`, `--include-warmups`, `--sin
 
 ```
 fitness import weights_11_3_26.txt          # idempotent; prints new data + corrections applied
-fitness exercises [--search curl] [--sort count|recent|name] [--unmapped]
+fitness exercises [--search curl] [--sort count|recent|name] [--unmapped (milestone 6)]
 fitness workouts [--last 10]                # list sessions
 fitness show [DATE|last]                    # one workout, set by set
 fitness history "Bench Press (Barbell)"     # session-by-session table for one lift
@@ -358,7 +358,7 @@ Every plot function has the signature `plot_x(df, **opts) -> matplotlib.figure.F
 
 1. ✅ **Parser + models.** `strong_csv.py` handles every quirk in §1. Tests use small fixture files, plus a smoke test on the real file: 104 workouts, 1,962 sets, and the rest timers attached.
 2. ✅ **Store, import, corrections log.** SQLite schema, full-history import with change summary (§2c), automatic workout merging and suspect-duration flags, all recorded in the log. Commands: `import`, `workouts`, `show`, `corrections`. The test for this step checks that the sample data ends up with 103 sessions and exactly one workout merge, on 2026-06-02.
-3. **Metrics + text commands.** `history`, `prs`, `stats`, `exercises`, plus `check` / `fix` for flagged outliers.
+3. ✅ **Metrics + text commands.** `history`, `prs`, `stats`, `exercises`, plus `check` / `fix` for flagged outliers.
 4. **Similar-exercise merging.** Candidate detection, offset suggestion, `merge review` and the other `merge` commands.
 5. **Core plots.** `progress` (including the merge preview), `volume`, `calendar`.
 6. **Metadata + remaining plots.** `exercises.toml` muscle groups, then `sets-per-muscle`, `rep-prs`, `duration`, `frequency`, and `dashboard`. `bodyweight_at()` with the placeholder.

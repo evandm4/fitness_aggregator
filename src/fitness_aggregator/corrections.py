@@ -28,6 +28,7 @@ from datetime import datetime
 # Types
 WORKOUT_MERGE = "workout_merge"
 DURATION_SUSPECT = "duration_suspect"
+VALUE_FIX = "value_fix"
 
 # Sources
 AUTO = "auto"
@@ -102,10 +103,15 @@ class ReconcileResult:
     reactivate: list[tuple[Correction, PlannedCorrection]] = field(default_factory=list)
     obsolete: list[Correction] = field(default_factory=list)
     unchanged: int = 0
+    # Your own corrections whose target changed in the source data, or changed back.
+    stale: list[Correction] = field(default_factory=list)
+    unstale: list[Correction] = field(default_factory=list)
 
     @property
     def changed(self) -> bool:
-        return bool(self.insert or self.update or self.reactivate or self.obsolete)
+        return bool(
+            self.insert or self.update or self.reactivate or self.obsolete or self.stale or self.unstale
+        )
 
 
 def reconcile(existing: list[Correction], planned: list[PlannedCorrection]) -> ReconcileResult:

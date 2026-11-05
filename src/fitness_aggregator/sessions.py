@@ -179,15 +179,24 @@ def plan_auto_corrections(
 
 
 def build_sessions(workouts: list[Workout], corrections: list[Correction] = ()) -> list[Session]:
-    """Apply active corrections to raw workouts. With no corrections, this is the raw view."""
+    """Group workouts into sessions using active merge and duration corrections.
+
+    Value fixes must already be applied to ``workouts`` (see ``fixes.apply_value_fixes``);
+    they are only attached to ``Session.applied`` here. With no corrections, this
+    is the raw view.
+    """
     active = [c for c in corrections if c.is_active]
     merges = {c.workout: c for c in active if c.type == WORKOUT_MERGE}
     suspect = {c.workout: c for c in active if c.type == DURATION_SUSPECT}
+    other: dict[str, list[Correction]] = {}
+    for c in active:
+        if c.type not in (WORKOUT_MERGE, DURATION_SUSPECT) and c.workout:
+            other.setdefault(c.workout, []).append(c)
 
     groups: list[tuple[list[Workout], list[Correction]]] = []
     for w in sorted(workouts, key=lambda w: w.started_at):
         key = workout_key(w.started_at)
-        applied = [suspect[key]] if key in suspect else []
+        applied = ([suspect[key]] if key in suspect else []) + other.get(key, [])
         if key in merges and groups:
             groups[-1][0].append(w)
             groups[-1][1].extend([merges[key], *applied])

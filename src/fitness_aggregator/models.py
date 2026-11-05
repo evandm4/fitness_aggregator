@@ -41,6 +41,10 @@ class WorkoutSet:
     rpe: float | None = None
     notes: str = ""
     rest_seconds: float | None = None
+    # Set only on views with corrections applied: the original values of any
+    # changed fields, and the ids of the corrections that changed them.
+    corrected_from: dict | None = field(default=None, compare=False)
+    correction_ids: tuple[int, ...] = field(default=(), compare=False)
 
     @property
     def volume(self) -> float:

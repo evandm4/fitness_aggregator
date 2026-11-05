@@ -26,14 +26,16 @@ from pathlib import Path
 from typing import Iterable
 
 from . import corrections as corr
-from .corrections import Correction, ReconcileResult, reconcile
+from . import fixes, outliers
+from .catalog import Catalog
+from .corrections import Correction, PlannedCorrection, ReconcileResult, reconcile
 from .importers.strong_csv import ParseResult
 from .models import ExerciseEntry, SetType, Workout, WorkoutSet
 from .sessions import Session, build_sessions, plan_auto_corrections, reverted_keys, workout_key
 from .settings import DEFAULT_DIR, Settings
 
 DB_ENV_VAR = "FITNESS_AGGREGATOR_DB"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -77,6 +79,12 @@ CREATE TABLE IF NOT EXISTS corrections (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE (type, target)
+);
+
+-- Outlier flags you dismissed in `fitness check` (added in schema 2).
+CREATE TABLE IF NOT EXISTS dismissed_flags (
+    flag_key     TEXT PRIMARY KEY,
+    dismissed_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS imports (
@@ -229,6 +237,11 @@ class Store:
                 raise RuntimeError(
                     f"database {self.path} was created by a newer version (schema {row['value']})"
                 )
+            elif int(row["value"]) < SCHEMA_VERSION:
+                # Migrations so far only add tables, which SCHEMA creates above.
+                self.conn.execute(
+                    "UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),)
+                )
 
     # --- raw data ---------------------------------------------------------
 
@@ -346,7 +359,7 @@ class Store:
 
         with self.conn:
             self._replace_workouts(plan.result.workouts)
-            reconciled = self._refresh_auto_corrections(settings)
+            reconciled = self._refresh_corrections(settings)
             self.conn.execute(
                 "INSERT INTO imports (imported_at, source_path, source_sha256, latest_workout,"
                 " workouts, sets, summary) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -418,20 +431,31 @@ class Store:
         r = self.conn.execute("SELECT * FROM corrections WHERE id = ?", (correction_id,)).fetchone()
         return self._row_to_correction(r) if r else None
 
-    def _refresh_auto_corrections(self, settings: Settings) -> ReconcileResult:
+    def _refresh_corrections(self, settings: Settings) -> ReconcileResult:
         existing = self.corrections()
-        planned = plan_auto_corrections(self.load_workouts(), settings, reverted_keys(existing))
+        workouts = self.load_workouts()
+        planned = plan_auto_corrections(workouts, settings, reverted_keys(existing))
         result = reconcile(existing, planned)
         now = _iso(_now())
+
+        # Your own fixes: stale when the raw data no longer has the values they were made against.
+        by_key = {workout_key(w.started_at): w for w in workouts}
+        for c in existing:
+            if c.source != corr.USER or c.status not in (corr.ACTIVE, corr.STALE):
+                continue
+            matches = fixes.raw_matches(by_key, c)
+            if c.status == corr.ACTIVE and not matches:
+                result.stale.append(c)
+                self.conn.execute(
+                    "UPDATE corrections SET status = ?, updated_at = ? WHERE id = ?", (corr.STALE, now, c.id)
+                )
+            elif c.status == corr.STALE and matches:
+                result.unstale.append(c)
+                self.conn.execute(
+                    "UPDATE corrections SET status = ?, updated_at = ? WHERE id = ?", (corr.ACTIVE, now, c.id)
+                )
         for p in result.insert:
-            self.conn.execute(
-                "INSERT INTO corrections (type, source, target, before, after, reason, status,"
-                " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    p.type, p.source, json.dumps(p.target, sort_keys=True), json.dumps(p.before),
-                    json.dumps(p.after), p.reason, corr.ACTIVE, now, now,
-                ),
-            )
+            self._insert_correction(p, now)
         for current, p in result.update:
             self.conn.execute(
                 "UPDATE corrections SET before = ?, after = ?, reason = ?, updated_at = ? WHERE id = ?",
@@ -450,10 +474,10 @@ class Store:
             )
         return result
 
-    def refresh_auto_corrections(self, settings: Settings) -> ReconcileResult:
-        """Recompute automatic corrections (after a settings change, for example)."""
+    def refresh_corrections(self, settings: Settings) -> ReconcileResult:
+        """Recompute automatic corrections and re-check yours (after a settings change, for example)."""
         with self.conn:
-            return self._refresh_auto_corrections(settings)
+            return self._refresh_corrections(settings)
 
     def set_correction_status(
         self, correction_id: int, status: str, settings: Settings
@@ -472,12 +496,19 @@ class Store:
             raise ValueError(
                 f"correction {correction_id} is obsolete (its condition no longer applies)"
             )
+        if status == corr.ACTIVE and current.source == corr.USER:
+            by_key = {workout_key(w.started_at): w for w in self.load_workouts()}
+            if not fixes.raw_matches(by_key, current):
+                raise ValueError(
+                    f"correction {correction_id} no longer matches the imported data "
+                    "(it was probably changed in Strong); make a new fix instead"
+                )
         with self.conn:
             self.conn.execute(
                 "UPDATE corrections SET status = ?, updated_at = ? WHERE id = ?",
                 (status, _iso(_now()), correction_id),
             )
-            knock_on = self._refresh_auto_corrections(settings)
+            knock_on = self._refresh_corrections(settings)
         return self.get_correction(correction_id), knock_on
 
     # --- views ------------------------------------------------------------
@@ -487,7 +518,80 @@ class Store:
         workouts = self.load_workouts()
         if raw:
             return build_sessions(workouts)
-        return build_sessions(workouts, self.corrections(statuses=[corr.ACTIVE]))
+        active = self.corrections(statuses=[corr.ACTIVE])
+        return build_sessions(fixes.apply_value_fixes(workouts, active), active)
+
+    def catalog(self, overrides_path: Path | None = None) -> Catalog:
+        return Catalog.build(self.load_workouts(), overrides_path)
+
+    def find_workouts(self, when: str) -> list[Workout]:
+        """Raw workouts whose start time begins with ``when`` (e.g. ``2026-06-04`` or ``2026-06-04T13:53``)."""
+        text = when.strip().replace(" ", "T")
+        return [w for w in self.load_workouts() if workout_key(w.started_at).startswith(text)]
+
+    # --- value fixes --------------------------------------------------------
+
+    def add_value_fix(
+        self,
+        workout: Workout,
+        exercise: str,
+        occurrence: int,
+        changes: dict[int, dict[str, float]],
+    ) -> Correction:
+        """Record a fix to set values. Fixing the same exercise entry again extends its correction."""
+        target = fixes.entry_target(workout, exercise, occurrence)
+        existing = next(
+            (c for c in self.corrections(type_=corr.VALUE_FIX) if c.target == target), None
+        )
+        planned = fixes.plan_value_fix(workout, exercise, occurrence, changes, existing)
+        now = _iso(_now())
+        with self.conn:
+            if existing is None:
+                cur = self._insert_correction(planned, now)
+                correction_id = cur.lastrowid
+            else:
+                self.conn.execute(
+                    "UPDATE corrections SET before = ?, after = ?, reason = ?, status = ?, updated_at = ?"
+                    " WHERE id = ?",
+                    (json.dumps(planned.before), json.dumps(planned.after), planned.reason, corr.ACTIVE,
+                     now, existing.id),
+                )
+                correction_id = existing.id
+        return self.get_correction(correction_id)
+
+    def _insert_correction(self, p: PlannedCorrection, now: str, status: str = corr.ACTIVE):
+        return self.conn.execute(
+            "INSERT INTO corrections (type, source, target, before, after, reason, status,"
+            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                p.type, p.source, json.dumps(p.target, sort_keys=True), json.dumps(p.before),
+                json.dumps(p.after), p.reason, status, now, now,
+            ),
+        )
+
+    # --- outlier flags --------------------------------------------------------
+
+    def open_flags(self, catalog: Catalog | None = None) -> list[outliers.Flag]:
+        """Likely data-entry errors not yet fixed or dismissed."""
+        workouts = self.load_workouts()
+        catalog = catalog or Catalog.build(workouts)
+        dismissed = self.dismissed_flag_keys()
+        covered = fixes.covered_positions(self.corrections(statuses=[corr.ACTIVE]))
+        return [
+            f for f in outliers.detect(workouts, catalog)
+            if f.key not in dismissed and f.location not in covered
+        ]
+
+    def dismissed_flag_keys(self) -> set[str]:
+        return {r[0] for r in self.conn.execute("SELECT flag_key FROM dismissed_flags")}
+
+    def dismiss_flags(self, keys: Iterable[str]) -> None:
+        now = _iso(_now())
+        with self.conn:
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO dismissed_flags (flag_key, dismissed_at) VALUES (?, ?)",
+                [(k, now) for k in keys],
+            )
 
     def corrections_for_workouts(self, keys: Iterable[str]) -> list[Correction]:
         keys = set(keys)
