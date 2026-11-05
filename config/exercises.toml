@@ -1,0 +1,456 @@
+# Exercise metadata: which muscles each exercise trains, and (optionally) how
+# it's measured. This file never combines exercises; see `fitness merge`.
+#
+# Format, one table per exercise name exactly as Strong logs it:
+#
+#   [exercise."Bench Press (Barbell)"]
+#   primary = ["chest"]                    # each hard set counts 1 set here
+#   secondary = ["triceps", "front_delts"] # ... and half a set here
+#   kind = "loaded"                        # optional: loaded, assisted, timed, unloaded
+#
+# `kind` overrides the measurement type the program infers from the name and
+# data. Leave it out unless the inference is wrong.
+#
+# Muscle vocabulary (any other name is ignored with a warning):
+#   chest, front_delts, side_delts, rear_delts, triceps, biceps, forearms,
+#   lats, upper_back, lower_back, abs, obliques, quads, hamstrings, glutes,
+#   adductors, abductors, calves
+#
+# "Hard sets" are normal, failure and drop sets; warm-ups never count.
+# Exercises missing from this file get a keyword-based guess for stats (shown
+# as a guess). List them with: fitness exercises --unmapped
+# An exercise combined into another (fitness merge) uses the kept name's entry.
+
+# --- Chest -------------------------------------------------------------------
+
+[exercise."Bench Press (Barbell)"]
+primary = ["chest"]
+secondary = ["triceps", "front_delts"]
+
+[exercise."Bench Press (Smith Machine)"]
+primary = ["chest"]
+secondary = ["triceps", "front_delts"]
+
+[exercise."Chest Press (Machine)"]
+primary = ["chest"]
+secondary = ["triceps", "front_delts"]
+
+# Incline pressing shifts work toward the upper chest and front delts.
+[exercise."Incline Bench Press (Barbell)"]
+primary = ["chest"]
+secondary = ["front_delts", "triceps"]
+
+[exercise."Incline Bench Press (Dumbbell)"]
+primary = ["chest"]
+secondary = ["front_delts", "triceps"]
+
+[exercise."Incline Bench Press (Smith Machine)"]
+primary = ["chest"]
+secondary = ["front_delts", "triceps"]
+
+[exercise."Incline Chest Press (Machine)"]
+primary = ["chest"]
+secondary = ["front_delts", "triceps"]
+
+# Decline pressing uses little front delt.
+[exercise."Decline Bench Press (Barbell)"]
+primary = ["chest"]
+secondary = ["triceps"]
+
+[exercise."Decline Press (Machine - Plate Loaded)"]
+primary = ["chest"]
+secondary = ["triceps"]
+
+[exercise."Chest Dip (Assisted)"]
+primary = ["chest", "triceps"]
+secondary = ["front_delts"]
+
+[exercise."Chest Fly"]
+primary = ["chest"]
+secondary = ["front_delts"]
+
+[exercise."Chest Fly (Cable)"]
+primary = ["chest"]
+secondary = ["front_delts"]
+
+[exercise."Chest Fly (Dumbbell)"]
+primary = ["chest"]
+secondary = ["front_delts"]
+
+[exercise."Pec Deck (Machine)"]
+primary = ["chest"]
+secondary = ["front_delts"]
+
+# --- Shoulders ---------------------------------------------------------------
+
+[exercise."Overhead Press (Dumbbell)"]
+primary = ["front_delts"]
+secondary = ["triceps", "side_delts"]
+
+[exercise."Shoulder Press (Machine)"]
+primary = ["front_delts"]
+secondary = ["triceps", "side_delts"]
+
+[exercise."Shoulder Press (Plate Loaded)"]
+primary = ["front_delts"]
+secondary = ["triceps", "side_delts"]
+
+[exercise."Lateral Raise (Cable)"]
+primary = ["side_delts"]
+secondary = []
+
+[exercise."Lateral Raise (Dumbbell)"]
+primary = ["side_delts"]
+secondary = []
+
+[exercise."Lateral Raise (Machine)"]
+primary = ["side_delts"]
+secondary = []
+
+[exercise."Behind the back Lateral Raise (Cable)"]
+primary = ["side_delts"]
+secondary = []
+
+[exercise."Front Raise (Cable)"]
+primary = ["front_delts"]
+secondary = []
+
+[exercise."Reverse Fly (Cable)"]
+primary = ["rear_delts"]
+secondary = ["upper_back"]
+
+[exercise."Reverse Fly (Machine)"]
+primary = ["rear_delts"]
+secondary = ["upper_back"]
+
+[exercise."Hi-Low Reverse Fly (Cable)"]
+primary = ["rear_delts"]
+secondary = ["upper_back"]
+
+[exercise."Low High Reverse Fly (Cable)"]
+primary = ["rear_delts"]
+secondary = ["upper_back"]
+
+[exercise."Face Pull (Cable)"]
+primary = ["rear_delts"]
+secondary = ["upper_back"]
+
+# --- Back --------------------------------------------------------------------
+
+[exercise."Lat Pulldown (Cable)"]
+primary = ["lats"]
+secondary = ["biceps", "upper_back"]
+
+[exercise."Lat Pulldown (Machine)"]
+primary = ["lats"]
+secondary = ["biceps", "upper_back"]
+
+[exercise."Lat Pulldown (Machine 2)"]
+primary = ["lats"]
+secondary = ["biceps", "upper_back"]
+
+[exercise."Diverging Lat Pulldown"]
+primary = ["lats"]
+secondary = ["biceps", "upper_back"]
+
+[exercise."Iso-Lateral Front Lat Pulldown"]
+primary = ["lats"]
+secondary = ["biceps", "upper_back"]
+
+[exercise."Pull Up (Assisted)"]
+primary = ["lats"]
+secondary = ["biceps", "upper_back"]
+
+# Straight-arm lat isolation: the biceps barely work.
+[exercise."One Arm Lat Pull-In (Cable)"]
+primary = ["lats"]
+secondary = []
+
+[exercise."Straight Arm Pulldown (Cable)"]
+primary = ["lats"]
+secondary = []
+
+[exercise."Seated Row (Cable)"]
+primary = ["upper_back", "lats"]
+secondary = ["biceps", "rear_delts"]
+
+[exercise."Seated Row (Machine)"]
+primary = ["upper_back", "lats"]
+secondary = ["biceps", "rear_delts"]
+
+[exercise."Iso-Lateral Row (Machine)"]
+primary = ["upper_back", "lats"]
+secondary = ["biceps", "rear_delts"]
+
+[exercise."Machine Row 2"]
+primary = ["upper_back", "lats"]
+secondary = ["biceps", "rear_delts"]
+
+[exercise."Diverging Low Row"]
+primary = ["upper_back", "lats"]
+secondary = ["biceps", "rear_delts"]
+
+[exercise."Incline Row (Dumbbell)"]
+primary = ["upper_back", "lats"]
+secondary = ["biceps", "rear_delts"]
+
+[exercise."Bent Over Row (Dumbbell)"]
+primary = ["upper_back", "lats"]
+secondary = ["biceps", "rear_delts"]
+
+[exercise."Bent Over One Arm Row (Dumbbell)"]
+primary = ["lats", "upper_back"]
+secondary = ["biceps", "rear_delts"]
+
+[exercise."Iso-Lateral High Row (Plate loaded)"]
+primary = ["lats", "upper_back"]
+secondary = ["biceps", "rear_delts"]
+
+[exercise."T Bar Row"]
+primary = ["upper_back", "lats"]
+secondary = ["biceps", "rear_delts", "lower_back"]
+
+# Traps count as upper_back (the vocabulary has no separate traps group).
+[exercise."Shrug (Dumbbell)"]
+primary = ["upper_back"]
+secondary = ["forearms"]
+
+[exercise."Incline Shrug"]
+primary = ["upper_back"]
+secondary = ["forearms"]
+
+[exercise."Back Extension"]
+primary = ["lower_back", "glutes"]
+secondary = ["hamstrings"]
+
+# --- Arms --------------------------------------------------------------------
+
+[exercise."Bicep Curl (Barbell)"]
+primary = ["biceps"]
+secondary = ["forearms"]
+
+[exercise."Bicep Curl (Cable)"]
+primary = ["biceps"]
+secondary = ["forearms"]
+
+[exercise."Bicep Curl (Dual Cable)"]
+primary = ["biceps"]
+secondary = ["forearms"]
+
+[exercise."Bicep Curl (Dumbbell)"]
+primary = ["biceps"]
+secondary = ["forearms"]
+
+[exercise."Bicep Curl (Machine)"]
+primary = ["biceps"]
+secondary = ["forearms"]
+
+[exercise."Single Bar Bicep Curl (Cable)"]
+primary = ["biceps"]
+secondary = ["forearms"]
+
+[exercise."One Arm Behind-The/Back Bicep Curl (Cable)"]
+primary = ["biceps"]
+secondary = ["forearms"]
+
+[exercise."Preacher Curl (Machine)"]
+primary = ["biceps"]
+secondary = []
+
+# Neutral and pronated grips load the brachioradialis (forearms) about as much as the biceps.
+[exercise."Hammer Curl (Dumbbell)"]
+primary = ["biceps", "forearms"]
+secondary = []
+
+[exercise."Hammer Curl (Rope - Cable)"]
+primary = ["biceps", "forearms"]
+secondary = []
+
+[exercise."Zottman Curl (Dumbbell)"]
+primary = ["biceps", "forearms"]
+secondary = []
+
+[exercise."Palm Up Wrist Curl (EZ Bar)"]
+primary = ["forearms"]
+secondary = []
+
+[exercise."Tricep Pushdown (Cable - Rope)"]
+primary = ["triceps"]
+secondary = []
+
+[exercise."Tricep Pushdown (Cable - V Bar)"]
+primary = ["triceps"]
+secondary = []
+
+[exercise."Tricep Pushdown (Machine)"]
+primary = ["triceps"]
+secondary = []
+
+[exercise."Triceps Pushdown (Cable - Straight Bar)"]
+primary = ["triceps"]
+secondary = []
+
+[exercise."One Arm Tricep Pushdown (Cable)"]
+primary = ["triceps"]
+secondary = []
+
+[exercise."Tricep Extension (Cable - Rope)"]
+primary = ["triceps"]
+secondary = []
+
+[exercise."Triceps Extension (Cable)"]
+primary = ["triceps"]
+secondary = []
+
+[exercise."Triceps Extension (Machine)"]
+primary = ["triceps"]
+secondary = []
+
+[exercise."Real Tricep Extension (Machine)"]
+primary = ["triceps"]
+secondary = []
+
+[exercise."One Arm Tricep Extension (Cable)"]
+primary = ["triceps"]
+secondary = []
+
+[exercise."Skullcrusher (Barbell)"]
+primary = ["triceps"]
+secondary = []
+
+[exercise."Skullcrusher (Dumbbell)"]
+primary = ["triceps"]
+secondary = []
+
+# --- Legs --------------------------------------------------------------------
+
+[exercise."Squat (Barbell)"]
+primary = ["quads", "glutes"]
+secondary = ["adductors", "lower_back"]
+
+[exercise."Pause Squats (Barbell)"]
+primary = ["quads", "glutes"]
+secondary = ["adductors", "lower_back"]
+
+[exercise."Squat (Smith Machine)"]
+primary = ["quads", "glutes"]
+secondary = ["adductors"]
+
+[exercise."Bulgarian Split Squat"]
+primary = ["quads", "glutes"]
+secondary = ["adductors"]
+
+[exercise."Leg Press"]
+primary = ["quads"]
+secondary = ["glutes", "adductors"]
+
+[exercise."Leg Press 2 (Machine)"]
+primary = ["quads"]
+secondary = ["glutes", "adductors"]
+
+[exercise."Seated Leg Press (Machine)"]
+primary = ["quads"]
+secondary = ["glutes", "adductors"]
+
+[exercise."Iso Lateral Leg Press (Plate loaded)"]
+primary = ["quads"]
+secondary = ["glutes", "adductors"]
+
+[exercise."Leg Extension (Machine)"]
+primary = ["quads"]
+secondary = []
+
+[exercise."Leg Extension (Machine 2)"]
+primary = ["quads"]
+secondary = []
+
+[exercise."Leg Extension (Plate Loaded)"]
+primary = ["quads"]
+secondary = []
+
+[exercise."Lying Leg Curl (Machine)"]
+primary = ["hamstrings"]
+secondary = []
+
+[exercise."Seated Leg Curl (Machine)"]
+primary = ["hamstrings"]
+secondary = []
+
+[exercise."Romanian Deadlift (Barbell)"]
+primary = ["hamstrings", "glutes"]
+secondary = ["lower_back", "adductors"]
+
+[exercise."Hip Thrust (Machine)"]
+primary = ["glutes"]
+secondary = ["hamstrings"]
+
+# Seated abduction is mostly glute medius/minimus: abductors first, glutes secondary.
+[exercise."Hip Abductor (Machine)"]
+primary = ["abductors"]
+secondary = ["glutes"]
+
+[exercise."Hip Abductor 2 (Machine)"]
+primary = ["abductors"]
+secondary = ["glutes"]
+
+[exercise."Hip Adductor (Machine)"]
+primary = ["adductors"]
+secondary = []
+
+[exercise."Hip Adductor 2 (Machine)"]
+primary = ["adductors"]
+secondary = []
+
+[exercise."Seated Calf Raise (Machine)"]
+primary = ["calves"]
+secondary = []
+
+[exercise."Seated Calf Raise (Plate Loaded)"]
+primary = ["calves"]
+secondary = []
+
+[exercise."Standing Calf Raise (Smith Machine)"]
+primary = ["calves"]
+secondary = []
+
+[exercise."One Leg Standing Calf Raise (Dumbbell)"]
+primary = ["calves"]
+secondary = []
+
+# --- Core --------------------------------------------------------------------
+
+[exercise."Crunch (Machine)"]
+primary = ["abs"]
+secondary = []
+
+[exercise."Crunch (Machine 2)"]
+primary = ["abs"]
+secondary = []
+
+[exercise."Cable Crunch"]
+primary = ["abs"]
+secondary = []
+
+[exercise."Decline Sit-ups"]
+primary = ["abs"]
+secondary = []
+
+[exercise."Supported Leg Raise"]
+primary = ["abs"]
+secondary = []
+
+[exercise."Plank"]
+primary = ["abs"]
+secondary = ["obliques"]
+
+[exercise."Rotary Torso"]
+primary = ["obliques"]
+secondary = ["abs"]
+
+# --- Other -------------------------------------------------------------------
+
+# Not an exercise (a joke entry): no muscles, so it never counts.
+[exercise."Dessert"]
+primary = []
+secondary = []
+kind = "timed"

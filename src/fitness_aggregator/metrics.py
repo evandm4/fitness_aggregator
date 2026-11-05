@@ -381,3 +381,62 @@ def consistency(sessions_df: pd.DataFrame, today: datetime) -> dict:
         "longest_week_streak": longest,
         "current_week_streak": current,
     }
+
+
+# --- sets per muscle group ------------------------------------------------------
+
+HARD_SET_TYPES = ("normal", "failure", "drop")  # warm-ups never count
+PRIMARY_CREDIT, SECONDARY_CREDIT = 1.0, 0.5
+
+
+def weekly_muscle_sets(sets_df: pd.DataFrame, catalog: Catalog, by: str = "week") -> pd.DataFrame:
+    """Hard sets per muscle per week (``by="week"``, W-SUN periods) or month (``"M"``).
+
+    Columns: ``period`` (pandas Period), ``muscle`` (str), ``sets`` (float).
+    Each normal, failure or drop set credits 1.0 to every primary muscle of its
+    exercise and 0.5 to every secondary one (``catalog.muscles``: the explicit
+    mapping, else a keyword guess). Periods between the first and last session
+    with no sets for a muscle are included as 0, for every muscle that appears
+    at all. Exercises with no muscles (mapped or guessed) don't count.
+    """
+    cols = ["period", "muscle", "sets"]
+    empty = pd.DataFrame({"period": pd.PeriodIndex([], freq=_FREQ.get(by, "W-SUN")),
+                          "muscle": pd.Series([], dtype=object), "sets": pd.Series([], dtype=float)})
+    if sets_df.empty:
+        _period(sets_df["session"], by)  # validates ``by``
+        return empty
+    all_periods = _period(sets_df["session"], by)
+    hard = sets_df[sets_df["set_type"].isin(HARD_SET_TYPES)]
+    credit = muscle_credits(catalog, hard["exercise"].unique())
+    if hard.empty or credit.empty:
+        return empty
+    counts = (hard.assign(period=_period(hard["session"], by))
+              .groupby(["period", "exercise"]).size().rename("n").reset_index())
+    rows = counts.merge(credit, on="exercise")
+    rows["sets"] = rows["n"] * rows["credit"]
+    totals = rows.groupby(["period", "muscle"])["sets"].sum()
+    periods = pd.period_range(all_periods.min(), all_periods.max(), freq=all_periods.dt.freq)
+    muscles = _muscle_order(totals.index.get_level_values("muscle").unique())
+    grid = pd.MultiIndex.from_product([periods, muscles], names=["period", "muscle"])
+    out = totals.reindex(grid, fill_value=0.0).astype(float).reset_index()
+    return out[cols]
+
+
+def muscle_credits(catalog: Catalog, exercises: Iterable[str]) -> pd.DataFrame:
+    """One row per (exercise, muscle) with its per-set credit (1.0 primary, 0.5 secondary)."""
+    rows = []
+    for name in exercises:
+        primary, secondary = catalog.muscles(name)
+        for m in dict.fromkeys(primary):
+            rows.append({"exercise": name, "muscle": m, "credit": PRIMARY_CREDIT})
+        for m in dict.fromkeys(secondary):
+            if m not in primary:
+                rows.append({"exercise": name, "muscle": m, "credit": SECONDARY_CREDIT})
+    return pd.DataFrame(rows, columns=["exercise", "muscle", "credit"])
+
+
+def _muscle_order(muscles: Iterable[str]) -> list[str]:
+    from .catalog import MUSCLES
+
+    order = {m: i for i, m in enumerate(MUSCLES)}
+    return sorted(muscles, key=lambda m: (order.get(m, len(order)), m))
