@@ -30,8 +30,8 @@ Date, Workout Name, Duration, Exercise Name, Set Order, Weight, Reps, Distance, 
 2. **Identify a workout by its `Date` timestamp, not by calendar day, then merge workouts that are close together** (§2a). On 2026-06-02 a 3-minute workout is followed 3 minutes later by a 47-minute one, so these become one session. On 2026-09-15, Pull and Legs are 73 minutes apart, so they stay separate.
 3. **`Duration` is a string** (`"1h 26m"`, `"47m"`, `"1h"`) and is repeated on every row. Two values are clearly a timer left running: `14h 7m` (2026-08-28) and `22h 43m` (2026-10-22). Flag any duration over 4h as suspect and leave it out of duration stats. The 2026-08-28 timer ran until 20 seconds before the next morning's workout started, so a suspect duration must never be used to decide whether two workouts are close enough to merge (§2a).
 4. **Timed exercises.** `Plank` (and `Dessert`) have weight 0 and reps 0, with the value in `Seconds`. Track these by hold time instead of load.
-5. **Assisted exercises.** For `Pull Up (Assisted)` and `Chest Dip (Assisted)`, `Weight` is the *assistance*, so **less is better**. If bodyweight is known, effective load = bodyweight − assistance. If not, plot the assistance on an inverted axis.
-6. **Bodyweight exercises at 0 lb** (`Supported Leg Raise`, `Decline Sit-ups`): track reps, not load.
+5. **Assisted exercises.** For `Pull Up (Assisted)` and `Chest Dip (Assisted)`, `Weight` is the *assistance*, so **less is better**. Bodyweight is not tracked or used anywhere. These lifts are measured on their own terms: assistance (lower is better) and reps (§3).
+6. **Exercises with no external load** (`Supported Leg Raise`, `Decline Sit-ups`, weight 0): track reps, not load.
 7. **Unused columns.** `Distance` is always 0, `RPE` is always empty, and `Notes` has one value. Parse them anyway, because future exports may use them.
 8. **Data-entry errors.** On 2026-06-04, `Preacher Curl (Machine)` has weight and reps swapped (8 lb × 80, 8 × 60, 6 × 50). Detect likely errors (for example, reps > 30 on a weighted lift) and ask you how to fix each one. Every fix is logged (§2b).
 9. **Similar exercise names.** Examples: `Tricep Pushdown` vs `Triceps Pushdown`, `Hip Abductor (Machine)` vs `Hip Abductor 2 (Machine)`, and `Crunch (Machine)` vs `Crunch (Machine 2)`. The program never merges these on its own. It shows you each similar group, and you choose whether to combine them, optionally with a weight offset (§4).
@@ -48,7 +48,7 @@ fitness_aggregator/
 ├── pyproject.toml
 ├── PLAN.md
 ├── config/
-│   └── exercises.toml        # muscle groups, flags (assisted, timed, bodyweight); no merging
+│   └── exercises.toml        # muscle groups, flags (assisted, timed, unloaded); no merging
 ├── src/fitness_aggregator/
 │   ├── __init__.py
 │   ├── models.py             # dataclasses + SetType enum
@@ -125,10 +125,10 @@ Use SQLite (default `~/.fitness_aggregator/lifts.db`, overridable with `--db`) w
 | `workouts`, `sets` | Raw imported data, exactly as exported. Never modified after import. |
 | `corrections` | Every change applied on top of the raw data (§2b) |
 | `exercise_links` | Your merge decisions for similar exercises: combined, combined with offset, or kept separate (§4) |
-| `settings` | Bodyweight, workout merge gap, and similar options |
+| `settings` | Workout merge gap, suspect-duration threshold, and similar options |
 
 Why SQLite instead of re-reading the CSV on every run:
-- **Overlapping exports.** Each Strong export contains the full history. Importing a newer export should be idempotent: dedupe on `(started_at, exercise, set_type, position)`.
+- **Full-history exports.** Each Strong export contains your entire history, so importing never appends. The newest export replaces the stored raw data, and corrections and merge decisions are reapplied on top (§2c).
 - **Corrections and merge decisions persist.** For example, the fix for the swapped Preacher Curl survives re-imports, and you are not asked about Hip Abductor again.
 - A future GUI or manual-entry feature can write to the same store.
 
@@ -158,11 +158,24 @@ Each entry records: id, timestamp, type, source (`auto` or `user`), the affected
 | `outlier_flag` | auto | "Reps 80 at 8 lb on a weighted lift: flagged for review, not changed" |
 
 How corrections are reported:
-- **On import:** a summary of what was new and every correction applied, for example "2 workouts merged, 2 durations excluded, 1 outlier flagged for review".
+- **On import:** a summary of what was new and every correction applied, for example "1 workout merged, 2 durations excluded, 1 outlier flagged for review".
 - **`fitness corrections`:** the full log, filterable by `--type`, `--auto`/`--user`, `--exercise`, or `--since`. `fitness corrections revert ID` undoes one entry.
 - **In output:** `history` and `show` mark corrected rows (for example with `*`) and list the reasons beneath the table. Plots built from corrected data get a small footnote such as "Includes 1 exercise merge (−55 lb offset); see `fitness corrections`."
 
 Parsing steps that change no values, such as attaching rest timers to sets or excluding warm-ups, are reported as counts on import, not as individual log entries.
+
+### 2c. Importing full-history exports
+
+Every Strong export contains your entire history, so the newest export is the source of truth.
+
+- **Replace, don't append.** Importing a newer export replaces the stored raw workouts and sets. Corrections and merge decisions are stored separately and reapplied afterwards. They point at stable keys (workout start time, exercise name, set position), not database row ids, so they survive the replacement.
+- **Changes since the last import.** The import summary compares the new export with the stored data:
+  - new workouts
+  - workouts edited in Strong (sets added, removed, or changed)
+  - workouts removed in Strong (deleted there); these are listed and must be confirmed before they're dropped
+- **Corrections whose target changed.** If you later fix the swapped Preacher Curl in Strong itself, the stored correction no longer matches the data. It's marked as stale and reported rather than silently applied or dropped. You choose to keep or remove it.
+- **Guard against importing an older export.** If the file's latest workout is older than what's stored, the import stops with a warning (override with `--force`). Without this, importing an older file would look like workouts had been deleted.
+- **Re-importing the same file** changes nothing and says so.
 
 ---
 
@@ -174,7 +187,8 @@ All metrics are pure functions of the form `DataFrame -> DataFrame`, which keeps
 - Top set: heaviest weight, ties broken by reps.
 - Estimated 1RM from the best set. Epley by default (`w × (1 + r/30)`), with Brzycki as an option. Ignore sets over about 12 reps for e1RM because the estimate gets unreliable.
 - Volume (Σ weight × reps), total reps, and set count.
-- Assisted lifts use effective load when bodyweight is set. Timed lifts use max and total seconds.
+- **Assisted lifts** have no e1RM and no load volume. Track the least assistance used, reps at that assistance, and set and rep counts. Their PRs are the lowest assistance at each rep count and the most reps at a given assistance. Charts plot assistance on an inverted y-axis labelled "Assistance (lb, lower is better)", so progress still trends upward.
+- **Timed lifts** use max and total seconds. **Unloaded lifts** use max and total reps.
 
 **PRs**
 - e1RM PRs, heaviest-weight PRs, and **rep PRs** (best weight at each rep count from 1 to 15).
@@ -286,7 +300,6 @@ fitness merge separate "Crunch (Machine)" "Crunch (Machine 2)"
 fitness merge undo "Hip Abductor 2 (Machine)"
 
 fitness workouts unmerge 2026-06-02T14:06:32   # undo an automatic workout merge
-fitness config set bodyweight 180
 fitness config set merge-gap 60             # minutes
 
 fitness plot progress "Bench Press (Barbell)" ["Incline Bench Press (Dumbbell)" ...]
@@ -324,13 +337,13 @@ Every plot function has the signature `plot_x(df, **opts) -> matplotlib.figure.F
 ## 8. Milestones
 
 1. **Parser + models.** `strong_csv.py` handles every quirk in §1. Tests use small fixture files, plus a smoke test on the real file: 104 workouts, 1,962 sets, and the rest timers attached.
-2. **Store, import, corrections log.** SQLite schema, idempotent import, automatic workout merging and suspect-duration flags, all recorded in the log. Commands: `import`, `workouts`, `show`, `corrections`. The test for this step checks that the sample data ends up with 103 sessions and exactly one workout merge, on 2026-06-02.
+2. **Store, import, corrections log.** SQLite schema, full-history import with change summary (§2c), automatic workout merging and suspect-duration flags, all recorded in the log. Commands: `import`, `workouts`, `show`, `corrections`. The test for this step checks that the sample data ends up with 103 sessions and exactly one workout merge, on 2026-06-02.
 3. **Metrics + text commands.** `history`, `prs`, `stats`, `exercises`, plus `check` / `fix` for flagged outliers.
 4. **Similar-exercise merging.** Candidate detection, offset suggestion, `merge review` and the other `merge` commands.
 5. **Core plots.** `progress` (including the merge preview), `volume`, `calendar`.
-6. **Metadata + remaining plots.** `exercises.toml` muscle groups, then `sets-per-muscle`, `rep-prs`, `duration`, `frequency`, and `dashboard`. Bodyweight setting.
+6. **Metadata + remaining plots.** `exercises.toml` muscle groups, then `sets-per-muscle`, `rep-prs`, `duration`, `frequency`, and `dashboard`.
 
-**Later / out of scope for v1:** GUI (PySide6 desktop or a Streamlit web dashboard, both reusing `metrics` and `plots`); manual set logging from the CLI; a bodyweight log; importers for other apps (Hevy, etc.) behind the same `importers/` interface.
+**Later / out of scope for v1:** GUI (PySide6 desktop or a Streamlit web dashboard, both reusing `metrics` and `plots`); manual set logging from the CLI; importers for other apps (Hevy, etc.) behind the same `importers/` interface.
 
 ---
 
@@ -342,6 +355,7 @@ Every plot function has the signature `plot_x(df, **opts) -> matplotlib.figure.F
 - Workouts that start within 60 minutes of the previous one ending are merged automatically (§2a).
 - Every correction the system makes is logged, reported, and reversible (§2b).
 
-**Still open**
-1. What bodyweight should be used for assisted pull-ups and dips? A single number, or tracked over time?
-2. Will you export the full history from Strong each time (overlapping files)? That is what the dedupe logic assumes.
+- Bodyweight is not used anywhere. Assisted lifts are tracked by assistance (lower is better) and reps.
+- Every Strong export contains the full history. The newest import replaces the stored raw data (§2c).
+
+**Still open:** none right now.
