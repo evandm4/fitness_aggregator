@@ -1194,7 +1194,6 @@ def _print_preview(console: Console, kept: Member, others: list[tuple[Member, fl
         counts = f"{_num(adjusted)} lb × {_num(t.reps)}" if name != kept.name else ""
         table.add_row(f"{when:%Y-%m-%d}", name, f"{_num(t.weight)} lb × {_num(t.reps)}", counts)
     console.print(table)
-    console.print("[dim]A chart preview comes with the plotting milestone.[/dim]")
 
 
 def _parse_adjustment(text: str) -> tuple[float | None, float | None]:
@@ -1266,6 +1265,8 @@ def merge_review(
                         s = similarity.suggest_offset(members[kept_i].name, members[kept_i].sets, m.name, m.sets, kind)
                         others.append((m, s.offset, None))
                 _print_preview(console, members[kept_i], others)
+                from .cli_plots import save_merge_previews
+                save_merge_previews(console, members[kept_i], others)
                 continue
             break
         if choice == "q":
@@ -1468,6 +1469,8 @@ def gui(ctx: typer.Context):
 
 # Commands defined in other modules add themselves to `app` on import.
 from . import cli_metadata  # noqa: E402,F401
+from .cli_plots import plot_app  # noqa: E402
+app.add_typer(plot_app, name="plot")
 
 if __name__ == "__main__":
     app()

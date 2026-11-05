@@ -61,6 +61,35 @@ fitness bodyweight                   # recent entries, lowest/highest, trend (--
 
 Readings are converted to lb and averaged per day. Like Strong exports, each Health export is your full history and replaces the stored entries; the import lists new, changed, and removed days. After importing, every analysis uses the latest entry on or before each workout.
 
+## Plots
+
+Every `fitness plot` command saves a PNG to `./plots/<name>_<date>.png` and prints the path. Use `--out FILE` for another name or format (`.png`, `.svg`, `.pdf`), or `--show` to open a window when you have a display. Charts note any corrections, combined exercises, or placeholder bodyweight they include.
+
+```bash
+fitness plot progress "leg extension (machine)" "hip abductor (machine)" --trend
+fitness plot progress "pull up" --metric assistance   # e1rm | top | volume | reps | seconds | assistance
+fitness plot progress squat --since 2026-09-01 --split --formula brzycki
+fitness plot volume --by month --group none          # weekly bars stacked by workout by default
+fitness plot calendar                                # training days, darker = more volume
+fitness plot duration                                # timer-left-running sessions left out
+fitness plot frequency --top 15                      # lifts you haven't done in 30 days are greyed
+fitness plot rep-prs "leg extension (machine)"       # best load at 1–15 reps, now vs. a month ago
+fitness plot dashboard --out summary.pdf
+```
+
+`fitness merge review` also saves a chart when you choose `[p] preview combined`.
+
+![Dashboard](docs/images/plot_dashboard.png)
+
+| | |
+|---|---|
+| ![Progress](docs/images/plot_progress.png) | ![Weekly volume](docs/images/plot_volume.png) |
+| ![Rep maxes](docs/images/plot_rep_prs.png) | ![Merge preview](docs/images/plot_merge_preview.png) |
+
+![Training calendar](docs/images/plot_calendar.png)
+
+The chart functions live in `fitness_aggregator.plots` (`plot_progress`, `plot_volume`, … `plot_dashboard`). Each takes the DataFrames from `fitness_aggregator.metrics` and returns a `matplotlib.figure.Figure` without touching pyplot, so a GUI can embed the same charts.
+
 Data is stored in `~/.fitness_aggregator/lifts.db` (override with `--db` or `$FITNESS_AGGREGATOR_DB`). Settings come from `config/settings.toml` when run from this folder (override with `--config`).
 
 ## Desktop app (optional)
