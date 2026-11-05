@@ -26,6 +26,7 @@ explicit mapping and always label as a guess.
 
 from __future__ import annotations
 
+import os
 import re
 import tomllib
 from collections import defaultdict
@@ -48,8 +49,34 @@ MUSCLES = (
 Muscles = tuple[list[str], list[str]]  # (primary, secondary)
 
 
+ENV_VAR = "FITNESS_AGGREGATOR_EXERCISES"
+# The copy shipped with the project (``<repo>/config/exercises.toml``), found
+# relative to this file so it works from any working directory.
+PROJECT_FILE = Path(__file__).resolve().parents[2] / "config" / "exercises.toml"
+
+
+def candidate_paths() -> list[Path]:
+    """Where to look for exercise metadata, in order."""
+    paths = []
+    if os.environ.get(ENV_VAR):
+        paths.append(Path(os.environ[ENV_VAR]))
+    paths += [
+        Path.cwd() / "config" / "exercises.toml",
+        Path.home() / ".fitness_aggregator" / "exercises.toml",
+        PROJECT_FILE,
+    ]
+    return paths
+
+
 def default_path() -> Path:
-    return Path.cwd() / "config" / "exercises.toml"
+    """The first exercise metadata file that exists (or the local path, if none do).
+
+    Looks at ``$FITNESS_AGGREGATOR_EXERCISES``, ``./config/exercises.toml``,
+    ``~/.fitness_aggregator/exercises.toml``, then the project's own copy, so
+    muscle mappings work no matter which folder you run ``fitness`` from.
+    """
+    paths = candidate_paths()
+    return next((p for p in paths if p.exists()), paths[0])
 
 
 @dataclass

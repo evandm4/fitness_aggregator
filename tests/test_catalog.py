@@ -51,3 +51,19 @@ def test_bodyweight_placeholder_and_entries():
     assert bw.at(datetime(2026, 7, 1)) == 175.0
     assert bw.at(datetime(2026, 8, 1)) == 172.0
     assert bw.at(datetime(2026, 12, 1)) == 172.0
+
+
+def test_metadata_found_from_any_working_directory(tmp_path, monkeypatch):
+    from fitness_aggregator import catalog
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(catalog.ENV_VAR, raising=False)
+    monkeypatch.setattr(catalog.Path, "home", lambda: tmp_path / "home")
+    assert catalog.default_path() == catalog.PROJECT_FILE
+    local = tmp_path / "config" / "exercises.toml"
+    local.parent.mkdir()
+    local.write_text("")
+    assert catalog.default_path() == local
+    env = tmp_path / "mine.toml"
+    env.write_text("")
+    monkeypatch.setenv(catalog.ENV_VAR, str(env))
+    assert catalog.default_path() == env
