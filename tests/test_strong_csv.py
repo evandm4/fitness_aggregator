@@ -187,3 +187,43 @@ def test_bad_date_rejected():
 def test_bad_duration_rejected():
     with pytest.raises(StrongParseError, match="unrecognised duration"):
         parse_strong_text(HEADER + row(dur="forever"))
+
+
+# --- edge cases (hardening) ----------------------------------------------------
+
+def test_header_only_export_has_no_workouts():
+    result = parse_strong_text(HEADER)
+    assert result.workouts == [] and result.stats.rows == 0 and result.warnings == []
+
+
+def test_empty_file_gives_clear_error():
+    with pytest.raises(StrongParseError, match="the file is empty"):
+        parse_strong_text("")
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "NaN"])
+def test_non_finite_numbers_rejected(value):
+    with pytest.raises(StrongParseError, match="Weight is not a number"):
+        parse_strong_text(HEADER + row(weight=value))
+
+
+def test_same_start_time_different_names_warns():
+    result = parse_strong_text(
+        HEADER + row(name="Push", ex="Bench") + row(name="Pull", ex="Row") + row(name="Pull", ex="Row", order="2")
+    )
+    [w] = result.workouts
+    assert w.name == "Push" and [e.name for e in w.exercises] == ["Bench", "Row"]
+    [warning] = result.warnings
+    assert "'Push' and 'Pull' both start at 2026-06-02 14:00:00" in warning
+
+
+def test_workout_with_only_rest_timers_has_no_sets():
+    result = parse_strong_text(HEADER + row(order="Rest Timer", seconds="90"))
+    [w] = result.workouts
+    assert w.set_count == 0 and result.stats.rest_timers_orphaned == 1
+
+
+def test_workout_spanning_midnight_keeps_its_start_date():
+    result = parse_strong_text(HEADER + row(date="2026-06-02 23:30:00", dur="1h 10m"))
+    [w] = result.workouts
+    assert w.started_at.date().isoformat() == "2026-06-02" and w.ended_at == datetime(2026, 6, 3, 0, 40)

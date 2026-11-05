@@ -13,6 +13,7 @@ key's line, so comments in the file are preserved.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import tomllib
@@ -63,29 +64,55 @@ def normalize_key(key: str) -> str:
     return key
 
 
+MAX_VALUE = 1_000_000  # far beyond any sensible value; keeps timedelta from overflowing
+
+
+class SettingsError(ValueError):
+    """The settings file can't be read or written, or holds a bad value. The message is for the user."""
+
+
 def _coerce(key: str, value) -> float:
+    if isinstance(value, bool):  # float(True) == 1.0; a TOML boolean is a mistake here
+        raise ValueError(f"{key} must be a number, got {value!r}")
     try:
         number = float(value)
     except (TypeError, ValueError):
         raise ValueError(f"{key} must be a number, got {value!r}") from None
+    if not math.isfinite(number):
+        raise ValueError(f"{key} must be a number, got {value!r}")
     if number <= 0:
         raise ValueError(f"{key} must be greater than 0")
+    if number >= MAX_VALUE:
+        raise ValueError(f"{key} must be less than {MAX_VALUE:,}")
     return number
+
+
+def _format_number(number: float) -> str:
+    """TOML text for a value, without the precision loss of ``:g`` (1234567.5 stays 1234567.5)."""
+    return str(int(number)) if number.is_integer() else repr(number)
 
 
 def load(path: str | os.PathLike | None = None) -> Settings:
     path = resolve_path(path)
     if not path.exists():
         return Settings()
-    with open(path, "rb") as fh:
-        data = tomllib.load(fh)
+    try:
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        raise SettingsError(f"settings file {path} is not valid TOML: {exc}") from None
+    except OSError as exc:
+        raise SettingsError(f"can't read settings file {path}: {exc.strerror or exc}") from None
     values = {}
     for raw_key, value in data.items():
         try:
             key = normalize_key(raw_key)
         except KeyError:
             continue  # ignore unknown keys rather than refusing to start
-        values[key] = _coerce(key, value)
+        try:
+            values[key] = _coerce(key, value)
+        except ValueError as exc:
+            raise SettingsError(f"settings file {path}: {exc}") from None
     return replace(Settings(), **values)
 
 
@@ -97,7 +124,7 @@ def set_value(key: str, value: str, path: str | os.PathLike | None = None) -> tu
     old = load(path)
 
     text = path.read_text() if path.exists() else ""
-    formatted = f"{key} = {number:g}"
+    formatted = f"{key} = {_format_number(number)}"
     pattern = re.compile(rf"^\s*{re.escape(key)}\s*=.*$", re.MULTILINE)
     if pattern.search(text):
         text = pattern.sub(formatted, text, count=1)
@@ -105,6 +132,9 @@ def set_value(key: str, value: str, path: str | os.PathLike | None = None) -> tu
         if text and not text.endswith("\n"):
             text += "\n"
         text += formatted + "\n"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    except OSError as exc:
+        raise SettingsError(f"can't write settings file {path}: {exc.strerror or exc}") from None
     return old, load(path)
