@@ -190,7 +190,9 @@ def suggest_offset(kept_name: str, kept: list[TopSet], adjusted_name: str, adjus
 
     if kind == LOADED:
         a_weight = statistics.mean(t.weight for t in a_sel)
-        if a_weight <= 0:
+        # No weight on either side (bodyweight sets): nothing to scale. Without this check an
+        # unweighted kept side suggested an offset that zeroes every adjusted set, and factor 0.
+        if a_weight <= 0 or statistics.mean(t.weight for t in k_sel) <= 0:
             return s
         a_reps = statistics.mean(t.reps for t in a_sel)
         k_e1rm = statistics.mean(t.weight * (1 + t.reps / 30) for t in k_sel)
