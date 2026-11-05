@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import html
 from typing import Callable
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -208,7 +208,7 @@ class OverviewTab(Tab):
             date_col("Date", "date"), Column("Exercise", "exercise"), Column("PR", "pr"),
             Column("Set", "detail"), Column("New", "new", align=RIGHT, sort=lambda r: r["value"]),
         ])
-        self.prs_view = make_table(self.prs_model)
+        self.prs_view = make_table(self.prs_model, stretch=1)
         lv.addWidget(self.prs_view)
         body.addWidget(left)
         self.chart = ChartView()
@@ -343,7 +343,7 @@ class ExercisesTab(Tab):
         hist, events = self.ctl.history(name)
         self.title.setText(name)
         sources = [m for m in self.ctl.snap.active_merges.values() if m.into == name]
-        note = [f"{kind} · {len(hist)} sessions · {len(events)} PRs"]
+        note = [f"{kind.capitalize()} · {len(hist)} sessions · {len(events)} PRs"]
         note += [f"includes {m.source}" + (f" ({m.label})" if m.label else "") for m in sources]
         self.note.setText("  ·  ".join(note))
         self.history_model.set_rows(self.ctl.history_rows(name))
@@ -366,7 +366,7 @@ class PRsTab(Tab):
             Column("Set", "e1rm_set"), Column("Date", "e1rm_date"), Column("Heaviest", "heaviest"),
             Column("Date ", "heaviest_date"), num_col("Sessions", "sessions"), date_col("Last done", "last"),
         ])
-        self.bests_view = make_table(self.bests_model)
+        self.bests_view = make_table(self.bests_model, stretch=0)
         tv.addWidget(self.bests_view)
         split.addWidget(top)
         bottom = QWidget()
@@ -377,7 +377,7 @@ class PRsTab(Tab):
             date_col("Date", "date"), Column("Exercise", "exercise"), Column("PR", "pr"), Column("Set", "detail"),
             Column("New", "new", align=RIGHT, sort=lambda r: r["value"]), Column("Previous", "previous", align=RIGHT),
         ])
-        self.recent_view = make_table(self.recent_model)
+        self.recent_view = make_table(self.recent_model, stretch=1)
         bv.addWidget(self.recent_view)
         split.addWidget(bottom)
         layout.addWidget(split)
@@ -410,7 +410,6 @@ class CorrectionsTab(Tab):
             Column("Reason", "reason"),
         ])
         self.view = make_table(self.model)
-        self.view.setWordWrap(True)
         self.view.selectionModel().selectionChanged.connect(self._selected)
         layout.addWidget(self.view, 1)
         self.detail = muted()
@@ -428,8 +427,8 @@ class CorrectionsTab(Tab):
 
     def refresh(self):
         self.model.set_rows(self.ctl.correction_rows(self.show_obsolete.isChecked()))
+        self.view.sortByColumn(0, Qt.AscendingOrder)
         fit_columns(self.view, max_width=180)
-        self.view.resizeRowsToContents()
         self._selected()
 
     def _selected(self, *_):
@@ -440,13 +439,10 @@ class CorrectionsTab(Tab):
         if c is None:
             self.detail.setText("Select a correction to revert or restore it.")
             return
-        target = ", ".join(f"{k}: {v}" for k, v in c.target.items())
-        parts = [f"#{c.id} · {target}"]
-        if c.before or c.after:
-            parts.append(f"before {json.dumps(c.before, ensure_ascii=False)} → after "
-                         f"{json.dumps(c.after, ensure_ascii=False)}")
-        parts.append(f"created {c.created_at:%Y-%m-%d %H:%M}, updated {c.updated_at:%Y-%m-%d %H:%M}")
-        self.detail.setText("  ·  ".join(parts))
+        target = ", ".join(f"{k} {v}" for k, v in sorted(c.target.items()))
+        self.detail.setText(
+            f"<b>#{c.id}</b> {html.escape(c.reason)}<br>Applies to {html.escape(target)} · {c.source}, "
+            f"{c.status} · created {c.created_at:%Y-%m-%d %H:%M}, updated {c.updated_at:%Y-%m-%d %H:%M}")
 
     def _target(self, correction_id):
         if correction_id is None:
