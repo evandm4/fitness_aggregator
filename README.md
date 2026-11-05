@@ -63,6 +63,20 @@ Readings are converted to lb and averaged per day. Like Strong exports, each Hea
 
 Data is stored in `~/.fitness_aggregator/lifts.db` (override with `--db` or `$FITNESS_AGGREGATOR_DB`). Settings come from `config/settings.toml` when run from this folder (override with `--config`).
 
+## Desktop app (optional)
+
+A PySide6 window over the same database and settings as the CLI: overview stats, workouts set by set, exercise history with a progress chart, PRs, the corrections log (revert/restore), and a Review tab for data-entry flags and similar exercises. File → Import Strong export… imports an export after showing what will change.
+
+```bash
+pip install -e '.[gui]'              # adds PySide6 and matplotlib
+fitness gui                          # or: fitness-gui
+fitness --db other.db gui            # --db/--config work as for every command (fitness-gui --db other.db)
+```
+
+![Exercises tab: history and progress chart](docs/images/gui_exercises.png)
+
+More screenshots: [overview](docs/images/gui_overview.png), [review](docs/images/gui_review.png).
+
 ## Development setup
 
 Requires Python 3.11+.
