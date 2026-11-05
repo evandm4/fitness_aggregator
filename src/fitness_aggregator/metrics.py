@@ -170,55 +170,68 @@ def pr_events(df: pd.DataFrame, formula: str = "epley") -> pd.DataFrame:
     Types: ``e1rm``, ``weight`` (heaviest load), ``rep`` (a load beating your
     previous best for at least that many reps, up to 15), ``seconds`` (timed),
     ``reps`` (unloaded).
+
+    This walks plain Python rows rather than pandas groups: it runs on every
+    analysis command and GUI refresh, and per-group pandas indexing was the
+    bottleneck.
     """
+    columns = ["session", "exercise", "kind", "pr_type", "value", "previous", "detail"]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
     d = _with_e1rm(df, formula)
+    # exercise → session → rows, keeping first-appearance order of exercises.
+    grouped: dict[str, dict] = {}
+    for row in zip(d["exercise"], d["session"], d["kind"], d["load"], d["reps"], d["seconds"],
+                   d["e1rm"], d["pr_candidate"]):
+        grouped.setdefault(row[0], {}).setdefault(row[1], []).append(row)
+
     events = []
-    for exercise, ex in d.groupby("exercise", sort=False):
-        kind = ex["kind"].iloc[0]
+    for exercise, sessions in grouped.items():
+        kind = next(iter(sessions.values()))[0][2]
         best_e1rm = best_load = best_seconds = best_reps = None
         at_least: dict[int, float] = {}  # reps → best load for at least that many reps
-        for i, (session, g) in enumerate(ex.groupby("session", sort=True)):
+        for i, session in enumerate(sorted(sessions)):
+            rows = sessions[session]
             baseline = i == 0
 
             def add(pr_type, value, previous, detail):
                 if not baseline and previous is not None:
-                    events.append({"session": session, "exercise": exercise, "kind": kind,
-                                   "pr_type": pr_type, "value": value, "previous": previous,
-                                   "detail": detail})
+                    events.append((session, exercise, kind, pr_type, value, previous, detail))
 
             if kind == TIMED:
-                v = g["seconds"].max()
+                v = max(r[5] for r in rows)
                 if best_seconds is None or v > best_seconds:
                     add("seconds", v, best_seconds, f"{v:g} s")
                     best_seconds = v
                 continue
             if kind == UNLOADED:
-                v = g["reps"].max()
+                v = max(r[4] for r in rows)
                 if best_reps is None or v > best_reps:
                     add("reps", v, best_reps, f"{v:g} reps")
                     best_reps = v
                 continue
 
-            top = _top_row(g)
-            if top is None:
+            cand = [r for r in rows if r[7]]
+            if not cand:
                 continue
-            if g["e1rm"].notna().any():
-                b = g.loc[g["e1rm"].idxmax()]
-                if best_e1rm is None or b["e1rm"] > best_e1rm:
-                    add("e1rm", b["e1rm"], best_e1rm, f"{b['load']:g} lb × {b['reps']:g}")
-                    best_e1rm = b["e1rm"]
+            top = max(cand, key=lambda r: (r[3], r[4]))
+            with_e1rm = [r for r in rows if not np.isnan(r[6])]
+            if with_e1rm:
+                b = max(with_e1rm, key=lambda r: r[6])  # first of equal maxima, like idxmax
+                if best_e1rm is None or b[6] > best_e1rm:
+                    add("e1rm", b[6], best_e1rm, f"{b[3]:g} lb × {b[4]:g}")
+                    best_e1rm = b[6]
             weight_pr_set = None
-            if best_load is None or top["load"] > best_load:
-                add("weight", top["load"], best_load, f"{top['load']:g} lb × {top['reps']:g}")
-                weight_pr_set = (top["load"], top["reps"])
-                best_load = top["load"]
+            if best_load is None or top[3] > best_load:
+                add("weight", top[3], best_load, f"{top[3]:g} lb × {top[4]:g}")
+                weight_pr_set = (top[3], top[4])
+                best_load = top[3]
 
             # Rep PRs against previous sessions only, one per rep count. A set
             # that another set this session matches or beats on both load and
             # reps isn't reported (140×3 adds nothing next to 140×5), nor is the
             # heaviest-weight PR set itself.
-            cand = g[g["pr_candidate"] & (g["load"] > 0)]
-            pairs = list(zip(cand["load"], cand["reps"]))
+            pairs = [(r[3], r[4]) for r in cand if r[3] > 0]
             rep_prs: dict[int, float] = {}
             for load, reps in pairs:
                 n = int(min(reps, REP_MAX_RANGE))
@@ -232,11 +245,13 @@ def pr_events(df: pd.DataFrame, formula: str = "epley") -> pd.DataFrame:
                         rep_prs[n] = load
             for n, load in sorted(rep_prs.items()):
                 add("rep", load, at_least[n], f"{load:g} lb × {n}{'+' if n == REP_MAX_RANGE else ''}")
-            for load, reps in zip(cand["load"], cand["reps"]):
+            for load, reps in pairs:
                 for n in range(1, int(min(reps, REP_MAX_RANGE)) + 1):
                     if load > at_least.get(n, -np.inf):
                         at_least[n] = load
-    out = pd.DataFrame(events, columns=["session", "exercise", "kind", "pr_type", "value", "previous", "detail"])
+    out = pd.DataFrame(events, columns=columns)
+    if not out.empty:
+        out["session"] = pd.to_datetime(out["session"])
     return out.sort_values(["session", "exercise"], kind="stable").reset_index(drop=True)
 
 
