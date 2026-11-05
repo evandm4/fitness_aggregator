@@ -1,0 +1,13 @@
+# User settings for fitness_aggregator.
+# Edit by hand or with `fitness config set <key> <value>`.
+
+# Placeholder bodyweight in lb. Used only for assisted-lift effective load
+# (bodyweight - assistance) until dated bodyweight data is imported.
+bodyweight_lb = 180
+
+# Merge a workout into the previous one if it starts within this many
+# minutes of the previous one ending.
+merge_gap_minutes = 60
+
+# Workout durations longer than this are treated as a timer left running.
+suspect_duration_hours = 4
