@@ -278,7 +278,7 @@ class Controller:
         self._history_cache: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = {}
 
     @classmethod
-    def open(cls, db: str | Path | None = None, config: str | Path | None = None, **kwargs) -> "Controller":
+    def open(cls, db: str | Path | None = None, config: str | Path | None = None, **kwargs) -> Controller:
         """Same database and settings resolution as the CLI."""
         return cls(Store(db or default_db_path()), settings_mod.load(config), **kwargs)
 

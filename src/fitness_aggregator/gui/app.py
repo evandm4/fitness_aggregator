@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
-import sys
 import importlib.util
+import sys
 from pathlib import Path
 
 INSTALL_HINT = "pip install 'fitness_aggregator[gui]'"

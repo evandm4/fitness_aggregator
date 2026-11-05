@@ -5,17 +5,42 @@ from __future__ import annotations
 import html
 import io
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from PySide6.QtCore import QByteArray, QItemSelectionModel, QObject, QRunnable, QSettings, Qt, QThreadPool, Signal
 from PySide6.QtGui import QAction, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter, QDialog, QDialogButtonBox,
-    QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSplitter, QStackedWidget,
-    QTableView, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
+    QAbstractItemView,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QCompleter,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSplitter,
+    QStackedWidget,
+    QTableView,
+    QTabWidget,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
 )
 
 from .. import corrections as corr
@@ -221,7 +246,7 @@ class ChartView(QScrollArea):
 # --- tabs ------------------------------------------------------------------------------------
 
 class Tab(QWidget):
-    def __init__(self, win: "MainWindow"):
+    def __init__(self, win: MainWindow):
         super().__init__()
         self.win = win
 
@@ -1031,7 +1056,7 @@ class BodyweightTab(Tab):
 class WelcomePage(QWidget):
     """Shown instead of the tabs while the database has no workouts."""
 
-    def __init__(self, win: "MainWindow"):
+    def __init__(self, win: MainWindow):
         super().__init__()
         outer = QVBoxLayout(self)
         outer.addStretch(1)
@@ -1150,7 +1175,7 @@ class MainWindow(QMainWindow):
         self.all_tabs = (self.overview, self.workouts, self.exercises, self.prs, self.charts, self.muscles,
                          self.bodyweight, self.corrections, self.review)
         for tab, name in zip(self.all_tabs, ("Overview", "Workouts", "Exercises", "PRs", "Charts", "Muscles",
-                                             "Bodyweight", "Corrections", "Review")):
+                                             "Bodyweight", "Corrections", "Review"), strict=True):
             tab.setObjectName(name.lower())
             self.tabs.addTab(tab, name)
         self.tabs.currentChanged.connect(self._tab_changed)
@@ -1340,7 +1365,12 @@ class MainWindow(QMainWindow):
         (self.review.flags_view if part == "flags" else self.review.groups_view).setFocus()
 
     def run_action(self, title: str, action: Callable[[], str]) -> str | None:
-        """Run a Store action, report the result, and reload everything."""
+        """Run a Store action, report the result, and reload everything.
+
+        Refused while a reload is still running: the rows on screen may be out of date."""
+        if self.is_busy:
+            self.statusBar().showMessage("Still loading, try again in a moment.", 5000)
+            return None
         try:
             message = action()
         except (ValueError, KeyError) as exc:
@@ -1364,7 +1394,7 @@ class MainWindow(QMainWindow):
 
         def failed(exc):
             if not isinstance(exc, (StrongParseError, OSError, ValueError)):
-                raise exc
+                return self._unexpected(title, exc)
             self.statusBar().showMessage("Import failed.", 8000)
             self.dialogs.error(title, f"{path}: {exc}")
             return None
@@ -1411,7 +1441,7 @@ class MainWindow(QMainWindow):
 
         def failed(exc):
             if not isinstance(exc, HEALTH_ERRORS + (ValueError,)):
-                raise exc
+                return self._unexpected(title, exc)
             self.statusBar().showMessage("Import failed.", 8000)
             self.dialogs.error(title, f"{path}: {exc}")
             return None
@@ -1440,6 +1470,13 @@ class MainWindow(QMainWindow):
         self.refresh()
         self.dialogs.info(title, message)
         return message
+
+    def _unexpected(self, title: str, exc: BaseException):
+        """A bug, not a bad file: raise it in synchronous mode (tests); say so in the app."""
+        if not self.background:
+            raise exc
+        self.dialogs.error(title, f"Something went wrong: {type(exc).__name__}: {exc}")
+        return None
 
     def closeEvent(self, event):
         self._save_settings()

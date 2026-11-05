@@ -15,7 +15,6 @@ import pytest
 pytest.importorskip("PySide6")
 pytest.importorskip("matplotlib")
 
-from helpers import REAL_EXPORT, workout_rows, write_export
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QApplication
 from typer.testing import CliRunner
@@ -30,6 +29,7 @@ from fitness_aggregator.gui.window import HIGH_BG, LOW_BG, Dialogs, MainWindow
 from fitness_aggregator.importers import parse_strong_csv
 from fitness_aggregator.settings import Settings
 from fitness_aggregator.store import Store
+from helpers import REAL_EXPORT, workout_rows, write_export
 
 TODAY = datetime(2026, 11, 5)
 HEALTH_EXPORT = Path(__file__).parent / "fixtures" / "apple_health_export.xml"
@@ -520,6 +520,8 @@ def test_background_refresh_keeps_the_window_responsive(make_window):
     third = next(r["key"] for r in w.review.flags_model.rows if r["set"] == "3")
     assert "Dismissed 1" in w.review.dismiss([third])
     assert w.is_busy and w.review.flags_model.rowCount() == 3
+    assert w.review.dismiss([third]) is None  # no actions on rows that are out of date
+    assert "Still loading" in w.statusBar().currentMessage()
     assert w.wait_until_idle(60)
     assert w.review.flags_model.rowCount() == 2
 
