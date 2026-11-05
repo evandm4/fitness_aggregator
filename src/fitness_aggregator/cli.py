@@ -1436,5 +1436,8 @@ def config_set(ctx: typer.Context, key: str, value: str):
             console.print("No automatic corrections changed.")
 
 
+# Commands defined in their own modules register themselves on `app` when imported.
+from . import cli_export  # noqa: E402,F401
+
 if __name__ == "__main__":
     app()
