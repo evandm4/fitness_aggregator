@@ -18,9 +18,9 @@ them separate means the stored log, not the rules, is what the views apply.
 from __future__ import annotations
 
 import statistics
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Iterable
 
 from .corrections import (
     DURATION_SUSPECT,

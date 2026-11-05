@@ -25,10 +25,11 @@ import csv
 import io
 import re
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from os import PathLike
-from typing import IO, Iterable
+from typing import IO
 
 from ..models import ExerciseEntry, SetType, Workout, WorkoutSet
 

@@ -63,7 +63,8 @@ def test_apply_renames_and_adjusts_keeping_originals():
     assert entry.name == "Hip Abductor (Machine)" and entry.merged_from == "Hip Abductor 2 (Machine)"
     assert entry.merge_label == "-50 lb" and entry.merge_correction_id == 5
     first, zero = entry.sets
-    assert (first.weight, first.pre_merge_weight, first.corrected_from, first.correction_ids) == (155, 205, {"weight": 205}, (5,))
+    assert (first.weight, first.pre_merge_weight) == (155, 205)
+    assert (first.corrected_from, first.correction_ids) == ({"weight": 205}, (5,))
     assert (zero.weight, zero.correction_ids) == (0, ())
     assert ws[1].exercises[0].name == "Hip Abductor 2 (Machine)"  # raw untouched
 

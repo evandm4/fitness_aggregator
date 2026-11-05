@@ -18,7 +18,7 @@ dependencies = [
 fitness = "fitness_aggregator.cli:app"
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.5"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -26,3 +26,15 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.flake8-bugbear]
+# Typer declares CLI options as default arguments.
+extend-immutable-calls = ["typer.Option", "typer.Argument"]

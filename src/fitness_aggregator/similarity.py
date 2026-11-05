@@ -25,9 +25,9 @@ import itertools
 import re
 import statistics
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Iterable
 
 from .catalog import ASSISTED, LOADED
 from .models import SetType, Workout

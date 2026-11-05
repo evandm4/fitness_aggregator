@@ -64,7 +64,7 @@ class PlannedCorrection:
     def key(self) -> CorrectionKey:
         return make_key(self.type, self.target)
 
-    def same_details(self, other: "Correction") -> bool:
+    def same_details(self, other: Correction) -> bool:
         return (self.before, self.after, self.reason) == (other.before, other.after, other.reason)
 
 

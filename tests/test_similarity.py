@@ -5,7 +5,14 @@ import pytest
 from fitness_aggregator.catalog import ASSISTED, TIMED
 from fitness_aggregator.importers import parse_strong_csv
 from fitness_aggregator.similarity import (
-    LIKELY, POSSIBLE, TopSet, describe_sets, find_candidates, suggest_offset, tokens, top_sets,
+    LIKELY,
+    POSSIBLE,
+    TopSet,
+    describe_sets,
+    find_candidates,
+    suggest_offset,
+    tokens,
+    top_sets,
 )
 from helpers import REAL_EXPORT
 
@@ -72,7 +79,7 @@ def test_suggest_offset_with_overlap_uses_closest_sessions():
     other = [ts(11, 80, 10), ts(30, 80, 10)]
     s = suggest_offset("A", kept, "B", other)
     assert "You used both between 2026-06-12 and 2026-07-01" in s.relation
-    assert [(k.weight, a.weight) for k, a in zip(s.kept_sets, s.adjusted_sets)] == [(100, 80), (200, 80)]
+    assert [(k.weight, a.weight) for k, a in zip(s.kept_sets, s.adjusted_sets, strict=True)] == [(100, 80), (200, 80)]
 
 
 def test_assisted_and_timed_suggestions():
