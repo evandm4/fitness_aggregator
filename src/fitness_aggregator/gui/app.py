@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
-import sys
 import importlib.util
+import sys
 from pathlib import Path
 
 INSTALL_HINT = "pip install 'fitness_aggregator[gui]'"
@@ -27,19 +27,27 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def create_window(db: Path | None = None, config: Path | None = None, **controller_kwargs):
-    """Build the controller and main window (a QApplication must already exist)."""
+def create_window(db: Path | None = None, config: Path | None = None, *, settings=None, background: bool = True,
+                  **controller_kwargs):
+    """Build the controller and main window (a QApplication must already exist).
+
+    ``settings`` is a QSettings for the window size and last tab (None remembers nothing).
+    """
     from .controller import Controller
     from .window import MainWindow
-    return MainWindow(Controller.open(db, config, **controller_kwargs))
+    return MainWindow(Controller.open(db, config, **controller_kwargs), settings=settings, background=background)
 
 
 def run(db: Path | None = None, config: Path | None = None) -> int:
+    from PySide6.QtCore import QSettings
     from PySide6.QtWidgets import QApplication
 
+    from .window import SETTINGS_APP, SETTINGS_ORG
+
     app = QApplication.instance() or QApplication(sys.argv[:1])
-    app.setApplicationName("Fitness Aggregator")
-    window = create_window(db, config)
+    app.setApplicationName(SETTINGS_APP)
+    app.setOrganizationName(SETTINGS_ORG)
+    window = create_window(db, config, settings=QSettings(SETTINGS_ORG, SETTINGS_APP))
     window.show()
     return app.exec()
 

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import pandas as pd
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
@@ -13,6 +14,7 @@ from PySide6.QtGui import QColor
 LEFT = Qt.AlignLeft | Qt.AlignVCenter
 RIGHT = Qt.AlignRight | Qt.AlignVCenter
 
+NO_PARENT = QModelIndex()
 STATUS_COLORS = {"active": "#1a7f37", "reverted": "#a15c00", "stale": "#c62828", "obsolete": "#8a8984"}
 
 
@@ -38,6 +40,7 @@ class Column:
     sort: Callable[[dict], Any] | None = None   # sort key; default row[key]
     align: Qt.AlignmentFlag = LEFT
     color: Callable[[dict], str | None] | None = None
+    background: Callable[[dict], str | None] | None = None
     tooltip: Callable[[dict], str] | None = None
 
     def display(self, row: dict) -> str:
@@ -102,10 +105,10 @@ class RowTableModel(QAbstractTableModel):
 
     # --- Qt API ----------------------------------------------------------------
 
-    def rowCount(self, parent=QModelIndex()) -> int:
+    def rowCount(self, parent=NO_PARENT) -> int:
         return 0 if parent.isValid() else len(self.rows)
 
-    def columnCount(self, parent=QModelIndex()) -> int:
+    def columnCount(self, parent=NO_PARENT) -> int:
         return 0 if parent.isValid() else len(self.columns)
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
@@ -126,6 +129,9 @@ class RowTableModel(QAbstractTableModel):
             return int(col.align)
         if role == Qt.ForegroundRole and col.color:
             c = col.color(row)
+            return QColor(c) if c else None
+        if role == Qt.BackgroundRole and col.background:
+            c = col.background(row)
             return QColor(c) if c else None
         if role == Qt.ToolTipRole:
             return col.tooltip(row) if col.tooltip else col.display(row)

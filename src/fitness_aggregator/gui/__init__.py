@@ -6,8 +6,12 @@ Install with ``pip install 'fitness_aggregator[gui]'`` and launch with
 Layout:
 
 * ``controller`` loads everything from ``Store``/``metrics`` once per refresh
-  and runs the same Store calls as the CLI commands. No Qt imports.
+  (``build_snapshot``, which can run on a worker thread with its own
+  connection) and runs the same Store calls as the CLI commands. No Qt imports.
 * ``models`` holds Qt table models over plain rows.
-* ``charts`` builds matplotlib figures from metrics DataFrames.
-* ``window`` is the main window and its tabs.
+* ``charts`` is a thin adapter over ``fitness_aggregator.plots``, so the
+  window draws (and saves) the same charts as ``fitness plot``.
+* ``window`` is the main window and its tabs. Modal dialogs go through the
+  injectable ``Dialogs`` class; ``MainWindow(background=False)`` runs data
+  loading synchronously, for tests.
 """
