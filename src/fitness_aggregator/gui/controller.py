@@ -408,8 +408,11 @@ class Controller:
         """(exercise_history, pr_events) for one exercise, cached until the next reload."""
         if exercise not in self._history_cache:
             d = self.snap.df[self.snap.df["exercise"] == exercise]
+            # pr_events works per exercise, so the full-history events can simply be filtered.
+            events = self.snap.events
+            events = events[events["exercise"] == exercise] if not events.empty else events
             self._history_cache[exercise] = (metrics.exercise_history(d, exercise, self.formula),
-                                             metrics.pr_events(d, self.formula))
+                                             events.reset_index(drop=True))
         return self._history_cache[exercise]
 
     def kind(self, exercise: str) -> str:

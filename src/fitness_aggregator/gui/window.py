@@ -6,7 +6,7 @@ import json
 from typing import Callable
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QItemSelectionModel, Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
@@ -585,10 +585,10 @@ class ReviewTab(Tab):
     def select_flags(self, predicate: Callable[[dict], bool]) -> None:
         sm = self.flags_view.selectionModel()
         sm.clearSelection()
+        flags = QItemSelectionModel.Select | QItemSelectionModel.Rows
         for i, r in enumerate(self.flags_model.rows):
             if predicate(r):
-                self.flags_view.selectRow(i) if not sm.hasSelection() else sm.select(
-                    self.flags_model.index(i, 0), sm.Select | sm.Rows)
+                sm.select(self.flags_model.index(i, 0), flags)
 
     def dismiss(self, keys: list[str] | None = None) -> str | None:
         keys = self._flag_keys(keys)
