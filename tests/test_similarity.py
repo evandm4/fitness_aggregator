@@ -5,7 +5,14 @@ import pytest
 from fitness_aggregator.catalog import ASSISTED, TIMED
 from fitness_aggregator.importers import parse_strong_csv
 from fitness_aggregator.similarity import (
-    LIKELY, POSSIBLE, TopSet, describe_sets, find_candidates, suggest_offset, tokens, top_sets,
+    LIKELY,
+    POSSIBLE,
+    TopSet,
+    describe_sets,
+    find_candidates,
+    suggest_offset,
+    tokens,
+    top_sets,
 )
 from helpers import REAL_EXPORT
 
@@ -72,7 +79,7 @@ def test_suggest_offset_with_overlap_uses_closest_sessions():
     other = [ts(11, 80, 10), ts(30, 80, 10)]
     s = suggest_offset("A", kept, "B", other)
     assert "You used both between 2026-06-12 and 2026-07-01" in s.relation
-    assert [(k.weight, a.weight) for k, a in zip(s.kept_sets, s.adjusted_sets)] == [(100, 80), (200, 80)]
+    assert [(k.weight, a.weight) for k, a in zip(s.kept_sets, s.adjusted_sets, strict=True)] == [(100, 80), (200, 80)]
 
 
 def test_assisted_and_timed_suggestions():
@@ -104,3 +111,36 @@ def test_real_export_candidates_and_hip_abductor_suggestion():
     a, b = "Hip Abductor (Machine)", "Hip Abductor 2 (Machine)"
     s = suggest_offset(a, top_sets(ws, a), b, top_sets(ws, b))
     assert (s.offset, s.factor) == (-50, 0.75)
+
+
+# --- edge cases (hardening) ------------------------------------------------------
+
+def _t(day, weight, reps, seconds=0.0):
+    return TopSet(datetime(2026, 6, day), weight, reps, seconds)
+
+
+def test_suggest_offset_kept_side_without_weight_gives_no_suggestion():
+    # Bodyweight sets kept, weighted sets adjusted: an offset would zero every weight (and factor 0 is invalid).
+    s = suggest_offset("Dip", [_t(1, 0, 12), _t(3, 0, 12)], "Dip (Weighted)", [_t(10, 25, 8)])
+    assert s.offset is None and s.factor is None
+    assert s.summary.startswith("No offset suggestion")
+
+
+def test_suggest_offset_adjusted_side_without_weight_gives_no_suggestion():
+    s = suggest_offset("Dip (Weighted)", [_t(1, 25, 8)], "Dip", [_t(10, 0, 12)])
+    assert s.offset is None and s.factor is None
+
+
+def test_suggest_offset_with_a_single_session_each():
+    s = suggest_offset("A", [_t(1, 100, 5)], "B", [_t(1, 80, 5)])
+    assert (s.offset, s.factor) == (20, 1.25)
+    assert "on 2026-06-01" in s.relation
+
+
+def test_three_name_group_with_one_separate_pair_still_offers_the_rest():
+    names = ["Row (Machine)", "Row (Machine 2)", "Row (Machine 3)"]
+    [g] = find_candidates(names, {frozenset(names[:2])})
+    undecided = [p for p in g.pairs if p != frozenset(names[:2])]
+    assert len(undecided) == 2
+    # Once every pair is decided, the group disappears.
+    assert find_candidates(names, set(g.pairs)) == []

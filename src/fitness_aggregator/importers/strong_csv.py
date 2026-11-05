@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import re
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from os import PathLike
-from typing import IO, Iterable
+from typing import IO
 
 from ..models import ExerciseEntry, SetType, Workout, WorkoutSet
 
@@ -103,9 +105,12 @@ def _number(value: str | None, column: str, line: int) -> float:
     if not value:
         return 0.0
     try:
-        return float(value)
+        number = float(value)
     except ValueError:
         raise StrongParseError(f"{column} is not a number: {value!r}", line) from None
+    if not math.isfinite(number):  # float() accepts "nan" and "inf"
+        raise StrongParseError(f"{column} is not a number: {value!r}", line)
+    return number
 
 
 def _optional_number(value: str | None, column: str, line: int) -> float | None:
@@ -130,7 +135,9 @@ def parse_strong_text(text: str) -> ParseResult:
 
 def _parse(fh: Iterable[str]) -> ParseResult:
     reader = csv.DictReader(fh)
-    header = tuple(name.strip() for name in (reader.fieldnames or ()))
+    if reader.fieldnames is None:
+        raise StrongParseError("not a Strong export: the file is empty", line=1)
+    header = tuple(name.strip() for name in reader.fieldnames)
     missing = [c for c in EXPECTED_COLUMNS if c not in header]
     if missing:
         raise StrongParseError(
@@ -140,6 +147,8 @@ def _parse(fh: Iterable[str]) -> ParseResult:
     stats = ParseStats()
     warnings: list[str] = []
     workouts: dict[datetime, Workout] = {}
+    # Workouts are keyed by start time; warn once when differently named ones share one.
+    collisions: set[datetime] = set()
     last_set: WorkoutSet | None = None
     last_set_key: tuple[datetime, str] | None = None
 
@@ -168,6 +177,12 @@ def _parse(fh: Iterable[str]) -> ParseResult:
                 duration=duration,
             )
             workouts[started_at] = workout
+        elif row["Workout Name"].strip() != workout.name and started_at not in collisions:
+            collisions.add(started_at)
+            warnings.append(
+                f"line {line}: workouts {workout.name!r} and {row['Workout Name'].strip()!r} both start at "
+                f"{started_at:%Y-%m-%d %H:%M:%S}; their sets were combined into one workout named {workout.name!r}"
+            )
         if not workout.notes and row["Workout Notes"].strip():
             workout.notes = row["Workout Notes"].strip()
 

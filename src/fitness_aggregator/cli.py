@@ -1471,6 +1471,7 @@ def gui(ctx: typer.Context):
 from . import cli_metadata  # noqa: E402,F401
 from .cli_plots import plot_app  # noqa: E402
 app.add_typer(plot_app, name="plot")
+from . import cli_export  # noqa: E402,F401
 
 if __name__ == "__main__":
     app()

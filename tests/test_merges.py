@@ -63,7 +63,8 @@ def test_apply_renames_and_adjusts_keeping_originals():
     assert entry.name == "Hip Abductor (Machine)" and entry.merged_from == "Hip Abductor 2 (Machine)"
     assert entry.merge_label == "-50 lb" and entry.merge_correction_id == 5
     first, zero = entry.sets
-    assert (first.weight, first.pre_merge_weight, first.corrected_from, first.correction_ids) == (155, 205, {"weight": 205}, (5,))
+    assert (first.weight, first.pre_merge_weight) == (155, 205)
+    assert (first.corrected_from, first.correction_ids) == ({"weight": 205}, (5,))
     assert (zero.weight, zero.correction_ids) == (0, ())
     assert ws[1].exercises[0].name == "Hip Abductor 2 (Machine)"  # raw untouched
 
@@ -71,3 +72,9 @@ def test_apply_renames_and_adjusts_keeping_originals():
 def test_inactive_merges_ignored():
     c = stored(plan_merge("B", "A"), status=corr.REVERTED)
     assert active_merges([c]) == {}
+
+
+def test_adjust_offset_has_no_float_noise():
+    # 1.1 + 2.2 is 3.3000000000000003 in floating point; it showed up in exports and broke equality.
+    assert Merge("a", "b", 2.2, None).adjust(1.1) == 3.3
+    assert Merge("a", "b", -0.1, None).adjust(0.3) == 0.2

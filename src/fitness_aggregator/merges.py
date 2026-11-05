@@ -42,7 +42,7 @@ class Merge:
         if self.factor is not None:
             return max(round(weight * self.factor, 2), 0.0)
         if self.offset is not None:
-            return max(weight + self.offset, 0.0)
+            return max(round(weight + self.offset, 2), 0.0)  # like the factor: no float noise (1.1 + 2.2)
         return weight
 
 

@@ -27,7 +27,8 @@ def as_active(planned, reverted=()):
     ]
 
 
-def sessions_for(ws, settings=Settings(), reverted=frozenset()):
+def sessions_for(ws, settings=None, reverted=frozenset()):
+    settings = settings or Settings()
     planned = plan_auto_corrections(ws, settings, reverted)
     return planned, build_sessions(ws, as_active(planned, reverted))
 

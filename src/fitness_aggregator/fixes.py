@@ -87,7 +87,9 @@ def plan_value_fix(
     """
     entry = find_entry(workout, exercise, occurrence)
     if entry is None:
-        raise ValueError(f"{exercise!r} (occurrence {occurrence}) is not in the {workout_key(workout.started_at)} workout")
+        raise ValueError(
+            f"{exercise!r} (occurrence {occurrence}) is not in the {workout_key(workout.started_at)} workout"
+        )
 
     # Build on the existing fix only while it's applied; a reverted or stale fix starts over.
     after: dict[str, dict] = {}
