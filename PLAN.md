@@ -141,7 +141,7 @@ Because raw data is never edited, every correction and merge can be undone. Metr
 
 ### 2a. Merging workouts that are close together (`sessions.py`)
 
-The rule: merge workout B into the preceding workout A when **B starts within 60 minutes of A ending** (end = start + duration). The gap can be changed with `fitness config set merge-gap 60`.
+The rule: merge workout B into the preceding workout A when **B starts within 60 minutes of A ending** (end = start + duration). The gap can be changed with `fitness config set merge_gap_minutes 60`.
 
 - If A's duration is suspect (over 4h), don't trust its end time. Estimate it as start + your median workout duration (about 1h15m in this data). Without this, the 2026-08-28 Legs workout, whose timer ran 14h until 20 seconds before the next morning's Pull workout, would be merged into it.
 - A merged session keeps the earliest start time and the longer workout's name. Its duration runs from the first start to the last end. Exercises keep their order.
@@ -318,8 +318,8 @@ fitness merge separate "Crunch (Machine)" "Crunch (Machine 2)"
 fitness merge undo "Hip Abductor 2 (Machine)"
 
 fitness workouts unmerge 2026-06-02T14:06:32   # undo an automatic workout merge
-fitness config set merge-gap 60             # minutes
-fitness config set bodyweight 180           # placeholder used until real weight data exists
+fitness config set merge_gap_minutes 60     # also suspect_duration_hours
+fitness config set bodyweight_lb 180        # placeholder used until real weight data exists
 fitness import-health export.zip            # (later) bodyweight history from Apple Health
 
 fitness plot progress "Bench Press (Barbell)" ["Incline Bench Press (Dumbbell)" ...]
@@ -357,7 +357,7 @@ Every plot function has the signature `plot_x(df, **opts) -> matplotlib.figure.F
 ## 8. Milestones
 
 1. ✅ **Parser + models.** `strong_csv.py` handles every quirk in §1. Tests use small fixture files, plus a smoke test on the real file: 104 workouts, 1,962 sets, and the rest timers attached.
-2. **Store, import, corrections log.** SQLite schema, full-history import with change summary (§2c), automatic workout merging and suspect-duration flags, all recorded in the log. Commands: `import`, `workouts`, `show`, `corrections`. The test for this step checks that the sample data ends up with 103 sessions and exactly one workout merge, on 2026-06-02.
+2. ✅ **Store, import, corrections log.** SQLite schema, full-history import with change summary (§2c), automatic workout merging and suspect-duration flags, all recorded in the log. Commands: `import`, `workouts`, `show`, `corrections`. The test for this step checks that the sample data ends up with 103 sessions and exactly one workout merge, on 2026-06-02.
 3. **Metrics + text commands.** `history`, `prs`, `stats`, `exercises`, plus `check` / `fix` for flagged outliers.
 4. **Similar-exercise merging.** Candidate detection, offset suggestion, `merge review` and the other `merge` commands.
 5. **Core plots.** `progress` (including the merge preview), `volume`, `calendar`.
