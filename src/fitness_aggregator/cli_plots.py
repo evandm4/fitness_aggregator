@@ -26,7 +26,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from matplotlib.figure import Figure
 
 plot_app = typer.Typer(
-    help="Draw charts: progress, volume, calendar, duration, frequency, rep PRs, dashboard. "
+    help="Draw charts: progress, volume, calendar, duration, frequency, rep PRs, sets per muscle, dashboard. "
          "Saves a PNG to ./plots/ by default.",
     no_args_is_help=True,
 )
@@ -334,6 +334,94 @@ def dashboard(
     fig = plots.plot_dashboard(a.df, sessions, metrics.pr_events(a.df, formula), formula=formula,
                                footnotes=footnotes(a, a.df, sessions=True))
     _output(console, fig, "dashboard", out, show)
+
+
+def parse_target(text: str) -> tuple[float, float] | None:
+    """'10-20' → (10.0, 20.0); 'none' or 'off' → None. Raises ValueError otherwise."""
+    t = text.strip().lower().replace("–", "-").replace(" ", "")
+    if t in ("none", "off", "no"):
+        return None
+    lo, sep, hi = t.partition("-")
+    if not sep:
+        raise ValueError(text)
+    low, high = float(lo), float(hi)
+    if not (0 <= low < high) or high == float("inf"):
+        raise ValueError(text)
+    return low, high
+
+
+def _muscle_names(console: Console, queries: list[str], present) -> list[str]:
+    """Catalog muscle names for ``--muscle`` values ('front delts', 'Front_Delts' and 'front-delts' all work)."""
+    from .catalog import MUSCLES
+    from .cli import _fail, esc
+
+    known = list(MUSCLES) + sorted(set(present) - set(MUSCLES))
+    out = []
+    for q in queries:
+        key = q.strip().lower().replace(" ", "_").replace("-", "_")
+        matches = [m for m in known if m == key] or [m for m in known if key and key in m]
+        if len(matches) != 1:
+            what = "matches several muscles" if matches else "isn't a muscle group"
+            _fail(console, f"{esc(repr(q))} {what}; use one of: {esc(', '.join(m.replace('_', ' ') for m in known))}.")
+        out.append(matches[0])
+    return list(dict.fromkeys(out))
+
+
+@plot_app.command("sets-per-muscle")
+def sets_per_muscle(
+    ctx: typer.Context,
+    by: str = typer.Option("week", "--by", help="week or month (month shows the average sets per week)."),
+    since: str | None = typer.Option(None, "--since", help=SINCE_HELP),
+    muscle: list[str] = typer.Option([], "--muscle", "-m",
+                                     help="Only this muscle group, e.g. chest or 'front delts'. Repeatable."),
+    heatmap: bool = typer.Option(False, "--heatmap", help="A muscle × week grid instead of lines."),
+    target: str = typer.Option("10-20", "--target", help="Sets per week to shade as the target, or 'none'."),
+    raw: bool = typer.Option(False, "--raw", help="Ignore corrections."),
+    out: Path | None = typer.Option(None, "--out", help=OUT_HELP),
+    show: bool = typer.Option(False, "--show", help=SHOW_HELP),
+):
+    """Hard sets per muscle group per week, against a 10–20 sets/week target (see fitness muscles)."""
+    from . import metrics, plots
+    from .cli import _fail, esc
+
+    console = _console(ctx)
+    if by not in ("week", "month"):
+        _fail(console, "--by must be week or month.")
+    try:
+        band = parse_target(target)
+    except ValueError:
+        _fail(console, f"--target expects a range like 10-20 (or none); got {esc(repr(target))}.")
+    state, console, a = _setup(ctx, raw)
+    catalog = state.store.catalog()
+    df = _since(console, a.df, "session", since)
+    wms = metrics.weekly_muscle_sets(df, catalog, by)
+    names = _muscle_names(console, muscle, wms["muscle"].unique()) if muscle else None
+
+    notes = []
+    today = pd.Timestamp.now()
+    if not wms.empty:
+        latest = wms["period"].max()
+        if latest.start_time <= today <= latest.end_time:
+            wms = wms[wms["period"] != latest]  # a partial period would look like a drop-off
+            notes.append(f"This {by} is still in progress and left out.")
+    if by == "month" and not wms.empty:
+        weeks = wms["period"].map(lambda p: p.days_in_month / 7)
+        wms = wms.assign(sets=wms["sets"] / weeks.astype(float))
+    hard = df[df["set_type"].isin(metrics.HARD_SET_TYPES)] if not df.empty else df
+    guessed = sorted(n for n in set(hard["exercise"]) if catalog.is_guessed(n)) if not hard.empty else []
+    if guessed:
+        notes.append(f"Muscles for {_plural(len(guessed), 'exercise')} are keyword guesses; "
+                     "see fitness exercises --unmapped.")
+    notes.append("Hard sets (normal, failure, drop): 1 per primary muscle, 0.5 per secondary.")
+    notes += footnotes(a, df, loads=False)
+
+    pretty = wms.assign(muscle=wms["muscle"].str.replace("_", " "))
+    title = "Sets per muscle per week" if by == "week" else "Average weekly sets per muscle, by month"
+    fig = plots.plot_sets_per_muscle(
+        pretty, kind="heatmap" if heatmap else "lines", target=band,
+        muscles=[n.replace("_", " ") for n in names] if names else None, title=title, footnotes=notes,
+    )
+    _output(console, fig, f"sets-per-muscle-{by}", out, show)
 
 
 # --- used by `fitness merge review` ------------------------------------------------

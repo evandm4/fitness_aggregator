@@ -1,5 +1,6 @@
 from datetime import date
 
+import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
@@ -133,8 +134,63 @@ def test_real_export_every_chart(tmp_path, monkeypatch):
     for args in (("progress", "leg extension (machine)", "preacher curl", "--trend"),
                  ("progress", "pull up", "--metric", "assistance"),
                  ("volume",), ("calendar",), ("duration",), ("frequency",),
-                 ("rep-prs", "leg extension (machine)"), ("dashboard",)):
+                 ("rep-prs", "leg extension (machine)"), ("dashboard",), ("sets-per-muscle",),
+                 ("sets-per-muscle", "--heatmap", "--by", "month")):
         r = run("plot", *args)
         assert r.exit_code == 0, (args, r.output)
     files = list((tmp_path / "plots").glob("*.png"))
-    assert len(files) == 8
+    assert len(files) == 10
+
+
+def test_sets_per_muscle(run, tmp_path, monkeypatch):
+    from fitness_aggregator import plots
+
+    calls = []
+    real = plots.plot_sets_per_muscle
+    monkeypatch.setattr(plots, "plot_sets_per_muscle", lambda df, **k: calls.append((df, k)) or real(df, **k))
+    _saved(run("plot", "sets-per-muscle"), tmp_path, "sets-per-muscle-week")
+    df, kw = calls[-1]
+    assert kw["kind"] == "lines" and kw["target"] == (10.0, 20.0) and kw["muscles"] is None
+    assert {"chest", "triceps", "front delts"} <= set(df["muscle"])  # underscores become spaces
+    week = df[df["period"] == pd.Period("2026-08-04", "W-SUN")].set_index("muscle")["sets"]
+    assert week["chest"] == 2  # two bench sets that week (the abductor isn't chest)
+
+    _saved(run("plot", "sets-per-muscle", "--by", "month", "--heatmap", "--target", "8-16", "-m", "chest",
+               "--muscle", "Front_Delts"), tmp_path, "sets-per-muscle-month")
+    df, kw = calls[-1]
+    assert kw["kind"] == "heatmap" and kw["target"] == (8.0, 16.0) and kw["muscles"] == ["chest", "front delts"]
+    aug = df[(df["period"] == pd.Period("2026-08", "M")) & (df["muscle"] == "chest")]["sets"].iloc[0]
+    assert aug == pytest.approx(4 / (31 / 7))  # monthly totals become average sets per week
+    assert "average weekly" in kw["title"].lower()
+
+    r = run("plot", "sets-per-muscle", "--target", "none", "--since", "2026-09-01", "--out", tmp_path / "s.svg")
+    assert r.exit_code == 0 and (tmp_path / "s.svg").exists()
+    df, kw = calls[-1]
+    assert kw["target"] is None and df["period"].min() >= pd.Period("2026-09-01", "W-SUN")
+
+
+@pytest.mark.parametrize("args, message", [
+    (["--by", "year"], "--by must be week or month."),
+    (["--target", "20-10"], "--target expects a range like 10-20"),
+    (["--target", "lots"], "--target expects a range like 10-20"),
+    (["--muscle", "wings"], "'wings' isn't a muscle group; use one of: chest, front delts"),
+    (["--muscle", "delts"], "'delts' matches several muscles"),
+])
+def test_sets_per_muscle_bad_options(run, args, message):
+    r = run("plot", "sets-per-muscle", *args)
+    assert r.exit_code == 1 and message in r.output, r.output
+
+
+def test_sets_per_muscle_leaves_out_the_period_in_progress(tmp_path, monkeypatch):
+    today = pd.Timestamp.now().normalize()
+    rows = [workout_rows(f"{d:%Y-%m-%d} 10:00:00", "1h", "Push") for d in (today - pd.Timedelta(days=14), today)]
+    run = _runner(tmp_path, monkeypatch, write_export(tmp_path / "e.csv", *rows))
+    from fitness_aggregator import plots
+
+    seen = []
+    real = plots.plot_sets_per_muscle
+    monkeypatch.setattr(plots, "plot_sets_per_muscle", lambda df, **k: seen.append((df, k)) or real(df, **k))
+    assert run("plot", "sets-per-muscle").exit_code == 0
+    df, kw = seen[-1]
+    assert today.to_period("W-SUN") not in set(df["period"])
+    assert any("still in progress" in n for n in kw["footnotes"])

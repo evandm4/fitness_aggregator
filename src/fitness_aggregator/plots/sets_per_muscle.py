@@ -31,6 +31,11 @@ def _table(df: pd.DataFrame) -> pd.DataFrame:
     return t[t.sum().sort_values(ascending=False).index]
 
 
+def _unit(index) -> str:
+    """'month' for monthly periods (values are then average sets per week), else 'week'."""
+    return "month" if isinstance(index, pd.PeriodIndex) and index.freqstr.startswith("M") else "week"
+
+
 def _x(index) -> pd.DatetimeIndex:
     return index.to_timestamp(how="start") if isinstance(index, pd.PeriodIndex) else pd.to_datetime(index)
 
@@ -67,7 +72,7 @@ def _draw_lines(fig: Figure, t: pd.DataFrame, target, colors) -> list[Axes]:
         ax.plot(x, t[m], color=style.color(0), lw=1.8, zorder=3)
         ax.fill_between(x, 0, t[m], color=style.color(0), alpha=0.08, lw=0, zorder=2)
         last = t[m].iloc[-1]
-        style.panel_title(ax, m, f"latest week {round(float(last), 1):g}")
+        style.panel_title(ax, m, f"latest {_unit(t.index)} {round(float(last), 1):g}")
         ax.set_ylim(0, ymax)
         style.date_axis(ax, maxticks=4)
     for i, ax in enumerate(axes[len(muscles):], start=len(muscles)):
@@ -93,7 +98,8 @@ def _draw_heatmap(fig: Figure, t: pd.DataFrame, target) -> Axes:
     ax.set_yticks(np.arange(data.shape[0]) + 0.5, t.columns)
     ax.invert_yaxis()
     step = max(1, len(x) // 10)
-    ax.set_xticks(np.arange(0, len(x), step) + 0.5, [f"{d:%b %d}" for d in x[::step]])
+    fmt = "%b %Y" if _unit(t.index) == "month" else "%b %d"
+    ax.set_xticks(np.arange(0, len(x), step) + 0.5, [f"{d:{fmt}}" for d in x[::step]])
     ax.tick_params(length=0)
     ax.grid(False)
     for side in ("left", "bottom"):
@@ -135,7 +141,7 @@ def plot_sets_per_muscle(df: pd.DataFrame, *, kind: str = "lines", target: tuple
         first = _draw_heatmap(fig, t, target)
     else:
         first = _draw_lines(fig, t, target, colors)[0]
-    sub = f"{len(t)} weeks · {n} muscle{'s' if n != 1 else ''}"
+    sub = f"{len(t)} {_unit(t.index)}s · {n} muscle{'s' if n != 1 else ''}"
     if target:
         sub += f" · target {target[0]:g}–{target[1]:g} sets/week shaded" if kind == "lines" else ""
     style.set_titles(fig, title or "Sets per muscle per week", sub if (kind == "heatmap" or n <= OVERLAY_MAX) else None,
