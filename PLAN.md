@@ -30,7 +30,7 @@ Date, Workout Name, Duration, Exercise Name, Set Order, Weight, Reps, Distance, 
 2. **Identify a workout by its `Date` timestamp, not by calendar day, then merge workouts that are close together** (§2a). On 2026-06-02 a 3-minute workout is followed 3 minutes later by a 47-minute one, so these become one session. On 2026-09-15, Pull and Legs are 73 minutes apart, so they stay separate.
 3. **`Duration` is a string** (`"1h 26m"`, `"47m"`, `"1h"`) and is repeated on every row. Two values are clearly a timer left running: `14h 7m` (2026-08-28) and `22h 43m` (2026-10-22). Flag any duration over 4h as suspect and leave it out of duration stats. The 2026-08-28 timer ran until 20 seconds before the next morning's workout started, so a suspect duration must never be used to decide whether two workouts are close enough to merge (§2a).
 4. **Timed exercises.** `Plank` (and `Dessert`) have weight 0 and reps 0, with the value in `Seconds`. Track these by hold time instead of load.
-5. **Assisted exercises.** For `Pull Up (Assisted)` and `Chest Dip (Assisted)`, `Weight` is the *assistance*, so **less is better**. Bodyweight is not tracked or used anywhere. These lifts are measured on their own terms: assistance (lower is better) and reps (§3).
+5. **Assisted exercises.** For `Pull Up (Assisted)` and `Chest Dip (Assisted)`, `Weight` is the *assistance*, so **less is better**. Effective load = bodyweight − assistance, using the bodyweight on that date (§2d). Until real weight data is imported, that's a placeholder you set (180 lb).
 6. **Exercises with no external load** (`Supported Leg Raise`, `Decline Sit-ups`, weight 0): track reps, not load.
 7. **Unused columns.** `Distance` is always 0, `RPE` is always empty, and `Notes` has one value. Parse them anyway, because future exports may use them.
 8. **Data-entry errors.** On 2026-06-04, `Preacher Curl (Machine)` has weight and reps swapped (8 lb × 80, 8 × 60, 6 × 50). Detect likely errors (for example, reps > 30 on a weighted lift) and ask you how to fix each one. Every fix is logged (§2b).
@@ -48,15 +48,18 @@ fitness_aggregator/
 ├── pyproject.toml
 ├── PLAN.md
 ├── config/
+│   ├── settings.toml         # bodyweight placeholder, merge gap, thresholds
 │   └── exercises.toml        # muscle groups, flags (assisted, timed, unloaded); no merging
 ├── src/fitness_aggregator/
 │   ├── __init__.py
 │   ├── models.py             # dataclasses + SetType enum
 │   ├── importers/
 │   │   ├── __init__.py
-│   │   └── strong_csv.py     # parse Strong export -> models
+│   │   ├── strong_csv.py     # parse Strong export -> models
+│   │   └── apple_health.py   # (later) bodyweight history from Apple Health export
 │   ├── store.py              # SQLite persistence, idempotent import
 │   ├── sessions.py           # merge workouts that are close together in time
+│   ├── bodyweight.py         # bodyweight_at(date): logged value or placeholder
 │   ├── corrections.py        # corrections log: record, list, revert
 │   ├── similarity.py         # find similar exercise names, suggest weight offsets
 │   ├── catalog.py            # exercise metadata (loads exercises.toml)
@@ -125,7 +128,9 @@ Use SQLite (default `~/.fitness_aggregator/lifts.db`, overridable with `--db`) w
 | `workouts`, `sets` | Raw imported data, exactly as exported. Never modified after import. |
 | `corrections` | Every change applied on top of the raw data (§2b) |
 | `exercise_links` | Your merge decisions for similar exercises: combined, combined with offset, or kept separate (§4) |
-| `settings` | Workout merge gap, suspect-duration threshold, and similar options |
+| `bodyweight` | Dated bodyweight entries (empty until an Apple Health import exists, §2d) |
+
+Settings are kept in `config/settings.toml`, which you can edit by hand or change with `fitness config set`.
 
 Why SQLite instead of re-reading the CSV on every run:
 - **Full-history exports.** Each Strong export contains your entire history, so importing never appends. The newest export replaces the stored raw data, and corrections and merge decisions are reapplied on top (§2c).
@@ -177,6 +182,19 @@ Every Strong export contains your entire history, so the newest export is the so
 - **Guard against importing an older export.** If the file's latest workout is older than what's stored, the import stops with a warning (override with `--force`). Without this, importing an older file would look like workouts had been deleted.
 - **Re-importing the same file** changes nothing and says so.
 
+### 2d. Bodyweight (`bodyweight.py`)
+
+All bodyweight lookups go through one function, `bodyweight_at(date)`:
+
+1. If the `bodyweight` table has entries, use the most recent entry on or before that date. Before the first entry, use the first entry.
+2. Otherwise, use the placeholder from `config/settings.toml`, which starts at **`bodyweight_lb = 180`**.
+
+What bodyweight affects: effective load for assisted lifts, which feeds their e1RM, volume, and PRs. Nothing else uses it.
+
+**It's always clear when the placeholder is used.** Output and plots that rely on it say so, for example "Assisted-lift loads use placeholder bodyweight 180 lb". This is a label, not an entry in the corrections log, since no logged data is changed.
+
+**Future Apple Health import.** `fitness import-health export.zip` would read the body-mass records from the Health app's "Export All Health Data" file into the `bodyweight` table. It would follow the same full-history rules as Strong imports (§2c). Derived numbers are never stored, so every effective load and e1RM switches from the placeholder to real dated weights as soon as the import runs. No other code changes are needed.
+
 ---
 
 ## 3. Metrics (`metrics.py`)
@@ -187,7 +205,7 @@ All metrics are pure functions of the form `DataFrame -> DataFrame`, which keeps
 - Top set: heaviest weight, ties broken by reps.
 - Estimated 1RM from the best set. Epley by default (`w × (1 + r/30)`), with Brzycki as an option. Ignore sets over about 12 reps for e1RM because the estimate gets unreliable.
 - Volume (Σ weight × reps), total reps, and set count.
-- **Assisted lifts** have no e1RM and no load volume. Track the least assistance used, reps at that assistance, and set and rep counts. Their PRs are the lowest assistance at each rep count and the most reps at a given assistance. Charts plot assistance on an inverted y-axis labelled "Assistance (lb, lower is better)", so progress still trends upward.
+- **Assisted lifts** use effective load (bodyweight − assistance, §2d) for top set, e1RM, volume, and PRs, so they behave like any other lift. Because that depends on bodyweight, there's also an assistance-only view (`--metric assistance`) that doesn't. It plots assistance on an inverted y-axis labelled "Assistance (lb, lower is better)". PRs in that view are the lowest assistance at each rep count.
 - **Timed lifts** use max and total seconds. **Unloaded lifts** use max and total reps.
 
 **PRs**
@@ -301,9 +319,11 @@ fitness merge undo "Hip Abductor 2 (Machine)"
 
 fitness workouts unmerge 2026-06-02T14:06:32   # undo an automatic workout merge
 fitness config set merge-gap 60             # minutes
+fitness config set bodyweight 180           # placeholder used until real weight data exists
+fitness import-health export.zip            # (later) bodyweight history from Apple Health
 
 fitness plot progress "Bench Press (Barbell)" ["Incline Bench Press (Dumbbell)" ...]
-             [--metric e1rm|top|volume|reps|seconds] [--trend]
+             [--metric e1rm|top|volume|reps|seconds|assistance] [--trend]
 fitness plot volume   [--by week|month] [--group muscle|workout|none]
 fitness plot sets-per-muscle [--by week]
 fitness plot rep-prs  "Squat (Barbell)"
@@ -341,9 +361,9 @@ Every plot function has the signature `plot_x(df, **opts) -> matplotlib.figure.F
 3. **Metrics + text commands.** `history`, `prs`, `stats`, `exercises`, plus `check` / `fix` for flagged outliers.
 4. **Similar-exercise merging.** Candidate detection, offset suggestion, `merge review` and the other `merge` commands.
 5. **Core plots.** `progress` (including the merge preview), `volume`, `calendar`.
-6. **Metadata + remaining plots.** `exercises.toml` muscle groups, then `sets-per-muscle`, `rep-prs`, `duration`, `frequency`, and `dashboard`.
+6. **Metadata + remaining plots.** `exercises.toml` muscle groups, then `sets-per-muscle`, `rep-prs`, `duration`, `frequency`, and `dashboard`. `bodyweight_at()` with the placeholder.
 
-**Later / out of scope for v1:** GUI (PySide6 desktop or a Streamlit web dashboard, both reusing `metrics` and `plots`); manual set logging from the CLI; importers for other apps (Hevy, etc.) behind the same `importers/` interface.
+**Later / out of scope for v1:** GUI (PySide6 desktop or a Streamlit web dashboard, both reusing `metrics` and `plots`); Apple Health bodyweight import (§2d); manual set logging from the CLI; importers for other apps (Hevy, etc.) behind the same `importers/` interface.
 
 ---
 
@@ -354,8 +374,7 @@ Every plot function has the signature `plot_x(df, **opts) -> matplotlib.figure.F
 - Similar exercises are combined only when you choose to, through the interactive review, with optional weight offsets (§4).
 - Workouts that start within 60 minutes of the previous one ending are merged automatically (§2a).
 - Every correction the system makes is logged, reported, and reversible (§2b).
-
-- Bodyweight is not used anywhere. Assisted lifts are tracked by assistance (lower is better) and reps.
+- Bodyweight comes from a placeholder you set (180 lb) until an Apple Health import provides real dated weights. It's used only for assisted-lift effective load, and output says when the placeholder is in use (§2d).
 - Every Strong export contains the full history. The newest import replaces the stored raw data (§2c).
 
 **Still open:** none right now.
