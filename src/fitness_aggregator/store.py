@@ -35,7 +35,7 @@ from .sessions import Session, build_sessions, plan_auto_corrections, reverted_k
 from .settings import DEFAULT_DIR, Settings
 
 DB_ENV_VAR = "FITNESS_AGGREGATOR_DB"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -94,6 +94,14 @@ CREATE TABLE IF NOT EXISTS separate_exercises (
     b          TEXT NOT NULL,
     decided_at TEXT NOT NULL,
     PRIMARY KEY (a, b)
+);
+
+-- Daily bodyweight from Apple Health (added in schema 4). Each Health import
+-- replaces the whole table, like Strong imports replace workouts.
+CREATE TABLE IF NOT EXISTS bodyweight (
+    date   TEXT PRIMARY KEY,
+    lb     REAL NOT NULL,
+    source TEXT
 );
 
 CREATE TABLE IF NOT EXISTS imports (
@@ -692,6 +700,56 @@ class Store:
 
     def merged_sources(self, into: str) -> list[str]:
         return sorted(m.source for m in self.active_merges().values() if m.into == into)
+
+    # --- bodyweight (Apple Health) -------------------------------------------
+
+    def bodyweight_days(self) -> list:
+        """Stored daily bodyweight as ``bodyweight.DayValue``s, oldest first."""
+        from .bodyweight import DayValue
+
+        return [
+            DayValue(datetime.fromisoformat(r["date"]).date(), r["lb"], r["source"] or "")
+            for r in self.conn.execute("SELECT date, lb, source FROM bodyweight ORDER BY date")
+        ]
+
+    def bodyweight_entries(self) -> list[tuple[datetime, float]]:
+        """``[(datetime, lb), ...]`` sorted by date, for ``Bodyweight``. Each day's entry is at midnight."""
+        return [(datetime.combine(d.day, datetime.min.time()), d.lb) for d in self.bodyweight_days()]
+
+    def plan_bodyweight_import(self, days, source_path: str | os.PathLike):
+        """Compare a Health import (``DayValue``s or anything with day/lb/source) with what's stored."""
+        from .bodyweight import DayValue, plan_changes
+
+        incoming = [DayValue(d.day, float(d.lb), getattr(d, "source", "") or "") for d in days]
+        return plan_changes(self.bodyweight_days(), incoming, str(source_path), file_sha256(source_path))
+
+    def apply_bodyweight_import(self, plan) -> bool:
+        """Replace stored bodyweight with the plan's days. Returns False when nothing changed."""
+        if not plan.has_changes:
+            return False
+        with self.conn:
+            self.conn.execute("DELETE FROM bodyweight")
+            self.conn.executemany(
+                "INSERT INTO bodyweight (date, lb, source) VALUES (?, ?, ?)",
+                [(d.day.isoformat(), d.lb, d.source or None) for d in plan.incoming],
+            )
+            self.conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('last_health_import', ?)",
+                (json.dumps({
+                    "imported_at": _iso(_now()),
+                    "source_path": plan.source_path,
+                    "source_sha256": plan.sha256,
+                    "days": len(plan.incoming),
+                    "new": len(plan.new),
+                    "changed": len(plan.changed),
+                    "removed": len(plan.removed),
+                }),),
+            )
+        return True
+
+    def last_health_import(self) -> dict | None:
+        row = self.conn.execute("SELECT value FROM meta WHERE key = 'last_health_import'").fetchone()
+        return json.loads(row["value"]) if row else None
 
 
 __all__ = [
