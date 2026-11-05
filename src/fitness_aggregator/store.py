@@ -20,11 +20,11 @@ import hashlib
 import json
 import os
 import sqlite3
+from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterable
 
 from . import corrections as corr
 from . import fixes, merges, outliers, similarity

@@ -20,9 +20,9 @@ def store(tmp_path):
         yield s
 
 
-def do_import(store, path, settings=Settings(), **kw):
+def do_import(store, path, settings=None, **kw):
     plan = store.plan_import(parse_strong_csv(path), path)
-    return store.apply_import(plan, settings, **kw)
+    return store.apply_import(plan, settings or Settings(), **kw)
 
 
 def test_first_import_stores_everything_and_creates_auto_corrections(store, tmp_path):

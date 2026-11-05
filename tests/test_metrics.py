@@ -98,7 +98,7 @@ def test_timed_and_unloaded_prs():
             + rows("2026-06-08 10:00:00", "Leg Raise", [(1, 0, 12)]))
     _, df = frame(text)
     ev = m.pr_events(df)
-    assert sorted(zip(ev["pr_type"], ev["value"])) == [("reps", 12), ("seconds", 75)]
+    assert sorted(zip(ev["pr_type"], ev["value"], strict=True)) == [("reps", 12), ("seconds", 75)]
 
 
 def test_rep_maxes():

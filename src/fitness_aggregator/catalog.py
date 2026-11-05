@@ -29,9 +29,9 @@ from __future__ import annotations
 import re
 import tomllib
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
 
 from .models import SetType, Workout
 
@@ -87,7 +87,7 @@ class Catalog:
         return sorted(n for n in (self.names if names is None else names) if n not in self.muscle_map)
 
     @classmethod
-    def build(cls, workouts: Iterable[Workout], overrides_path: Path | None = None) -> "Catalog":
+    def build(cls, workouts: Iterable[Workout], overrides_path: Path | None = None) -> Catalog:
         all_sets = defaultdict(list)
         for w in workouts:
             for entry in w.exercises:

@@ -16,8 +16,9 @@ Conventions:
 
 from __future__ import annotations
 
+import functools
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -164,6 +165,12 @@ def rep_maxes(df: pd.DataFrame, exercise: str, max_reps: int = REP_MAX_RANGE) ->
     return pd.DataFrame(rows, columns=["reps", "load", "actual_reps", "weight", "session"])
 
 
+def _add_pr_event(events, baseline, session, exercise, kind, pr_type, value, previous, detail) -> None:
+    """Record a PR, unless this is the exercise's baseline session or there's nothing to beat."""
+    if not baseline and previous is not None:
+        events.append((session, exercise, kind, pr_type, value, previous, detail))
+
+
 def pr_events(df: pd.DataFrame, formula: str = "epley") -> pd.DataFrame:
     """Every PR, in order. The first session of each exercise is a baseline, not a PR.
 
@@ -182,7 +189,7 @@ def pr_events(df: pd.DataFrame, formula: str = "epley") -> pd.DataFrame:
     # exercise → session → rows, keeping first-appearance order of exercises.
     grouped: dict[str, dict] = {}
     for row in zip(d["exercise"], d["session"], d["kind"], d["load"], d["reps"], d["seconds"],
-                   d["e1rm"], d["pr_candidate"]):
+                   d["e1rm"], d["pr_candidate"], strict=True):
         grouped.setdefault(row[0], {}).setdefault(row[1], []).append(row)
 
     events = []
@@ -193,10 +200,7 @@ def pr_events(df: pd.DataFrame, formula: str = "epley") -> pd.DataFrame:
         for i, session in enumerate(sorted(sessions)):
             rows = sessions[session]
             baseline = i == 0
-
-            def add(pr_type, value, previous, detail):
-                if not baseline and previous is not None:
-                    events.append((session, exercise, kind, pr_type, value, previous, detail))
+            add = functools.partial(_add_pr_event, events, baseline, session, exercise, kind)
 
             if kind == TIMED:
                 v = max(r[5] for r in rows)
@@ -320,7 +324,9 @@ def sessions_frame(sessions: Iterable[Session]) -> pd.DataFrame:
     return df
 
 
-def period_stats(sessions_df: pd.DataFrame, sets_df: pd.DataFrame, events: pd.DataFrame, by: str = "week") -> pd.DataFrame:
+def period_stats(
+    sessions_df: pd.DataFrame, sets_df: pd.DataFrame, events: pd.DataFrame, by: str = "week"
+) -> pd.DataFrame:
     """Per week or month, including empty periods between the first and last session."""
     cols = ["period", "sessions", "duration_min", "avg_duration_min", "sets", "reps", "volume", "prs"]
     if sessions_df.empty:

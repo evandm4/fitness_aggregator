@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import difflib
 import itertools
+import math
 import re
 import statistics
 from collections import defaultdict
@@ -130,7 +131,12 @@ def describe_sets(sets: list[TopSet]) -> str:
 
 
 def round_to(x: float, step: float = 5) -> float:
-    return step * round(x / step)
+    """Round to the nearest ``step``, halves away from zero (12.5 → 15, -12.5 → -15).
+
+    Python's ``round`` rounds halves to even, which made 12.5 → 10 but 17.5 → 20.
+    """
+    q = abs(x) / step
+    return math.copysign(step * math.floor(q + 0.5), x) + 0.0
 
 
 @dataclass

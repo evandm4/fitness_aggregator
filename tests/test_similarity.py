@@ -144,3 +144,9 @@ def test_three_name_group_with_one_separate_pair_still_offers_the_rest():
     assert len(undecided) == 2
     # Once every pair is decided, the group disappears.
     assert find_candidates(names, set(g.pairs)) == []
+
+
+@pytest.mark.parametrize("x, expected", [(12.5, 15), (7.5, 10), (-12.5, -15), (-51, -50), (2.4, 0), (-2.4, 0), (0, 0)])
+def test_round_to_rounds_halves_away_from_zero(x, expected):
+    from fitness_aggregator.similarity import round_to
+    assert round_to(x) == expected
