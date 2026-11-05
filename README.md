@@ -1,85 +1,60 @@
 # fitness_aggregator
 
-A command-line tool for importing, analyzing, and graphing weightlifting logs (Strong app CSV exports). See [PLAN.md](PLAN.md) for the design.
-
-## Status
-
-Milestones 1–4 and 6 are done: parsing Strong exports, SQLite storage, merging nearby workouts, the corrections log, per-lift history, PRs, training stats, data-entry checks, combining similar exercises with weight offsets, muscle groups, and bodyweight from Apple Health. See [PLAN.md](PLAN.md) §8 for what comes next.
-
-## Usage
-
-```bash
-fitness import weights_11_3_26.txt   # each export is your full history; re-import any time
-fitness workouts                     # recent sessions (--all, --since 2026-09-01, --raw)
-fitness show last                    # one session set by set (or a date: fitness show 2026-06-02)
-fitness corrections                  # every change applied on top of your raw data
-fitness corrections revert 3         # undo one (fitness corrections restore 3 re-applies it)
-fitness workouts unmerge 2026-06-02T14:06
-
-fitness history "bench press (barbell)"   # one lift, session by session (a unique part of the name works)
-fitness prs                          # current bests for every exercise
-fitness prs squat                    # rep maxes + PR timeline for one lift
-fitness prs --recent 30d             # PRs set in the last 30 days
-fitness stats                        # frequency, streaks, weekly volume (--by month)
-fitness exercises                    # everything you've logged (--sort recent, --search curl)
-fitness check                        # review likely data-entry errors: swap, edit, or dismiss
-fitness fix 2026-06-04T13:53 "preacher curl" --set 1 --swap-weight-reps
-
-fitness merge review                 # similar exercises: combine (with a suggested offset) or keep separate
-fitness merge list                   # what's combined and what's kept separate
-fitness merge add "hip abductor 2" --into "hip abductor (machine)" --offset -50
-fitness merge undo "hip abductor 2"
-fitness config show
-fitness config set merge_gap_minutes 45
-```
-
-## Muscle groups
-
-`config/exercises.toml` maps every exercise to the muscles it trains, from a fixed list (chest, front_delts, side_delts, rear_delts, triceps, biceps, forearms, lats, upper_back, lower_back, abs, obliques, quads, hamstrings, glutes, adductors, abductors, calves):
-
-```toml
-[exercise."Bench Press (Barbell)"]
-primary = ["chest"]                     # each hard set counts 1
-secondary = ["triceps", "front_delts"]  # ... and 0.5 here
-```
-
-```bash
-fitness muscles                      # hard sets per muscle per week (--by month, --last N, --all, --since DATE)
-fitness exercises --unmapped         # exercises with no entry yet, with a suggested mapping
-```
-
-Hard sets are normal, failure, and drop sets. Weeks under 10 or over 20 sets for a muscle are highlighted (a common hypertrophy range). Exercises missing from the file get a keyword guess (a "curl" trains biceps), which is always labelled as a guess. `fitness exercises` shows each exercise's primary muscles.
-
-## Bodyweight from Apple Health
-
-Bodyweight only affects assisted lifts (load = bodyweight − assistance). Until you import real weights, a placeholder from settings is used (`bodyweight_lb`, 180 by default).
-
-```bash
-fitness import-health export.zip     # Health app → profile → Export All Health Data (or the export.xml inside)
-fitness bodyweight                   # recent entries, lowest/highest, trend (--last N)
-```
-
-Readings are converted to lb and averaged per day. Like Strong exports, each Health export is your full history and replaces the stored entries; the import lists new, changed, and removed days. After importing, every analysis uses the latest entry on or before each workout.
-
-## Plots
-
-Every `fitness plot` command saves a PNG to `./plots/<name>_<date>.png` and prints the path. Use `--out FILE` for another name or format (`.png`, `.svg`, `.pdf`), or `--show` to open a window when you have a display. Charts note any corrections, combined exercises, or placeholder bodyweight they include.
-
-```bash
-fitness plot progress "leg extension (machine)" "hip abductor (machine)" --trend
-fitness plot progress "pull up" --metric assistance   # e1rm | top | volume | reps | seconds | assistance
-fitness plot progress squat --since 2026-09-01 --split --formula brzycki
-fitness plot volume --by month --group none          # weekly bars stacked by workout by default
-fitness plot calendar                                # training days, darker = more volume
-fitness plot duration                                # timer-left-running sessions left out
-fitness plot frequency --top 15                      # lifts you haven't done in 30 days are greyed
-fitness plot rep-prs "leg extension (machine)"       # best load at 1–15 reps, now vs. a month ago
-fitness plot dashboard --out summary.pdf
-```
-
-`fitness merge review` also saves a chart when you choose `[p] preview combined`.
+Turn your Strong app exports into a training history you can trust. `fitness` imports the CSV export into a local SQLite database and cleans it up without ever editing the original: it merges workouts that were split by accident, sets aside runaway timers, helps you fix typos such as weight and reps entered the wrong way round, and combines exercises that are really the same machine, with a weight offset if one gym's machine reads heavier. Every change is logged and can be undone. On top of that you get per-lift history, PRs and rep maxes, weekly stats, hard sets per muscle group, bodyweight from Apple Health, CSV/JSON export, and charts, from the command line or an optional desktop app.
 
 ![Dashboard](docs/images/plot_dashboard.png)
+
+## Quick start
+
+Requires Python 3.11+.
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e .              # add '.[gui]' for the desktop app
+source .venv/bin/activate
+
+fitness import weights_11_3_26.txt      # your Strong export (Settings → Export Data)
+fitness check                           # review likely data-entry errors
+fitness merge review                    # decide which similar exercises are the same
+fitness workouts                        # recent sessions
+fitness history "leg extension (machine)"   # one lift, session by session
+fitness plot dashboard                  # saves plots/dashboard_<date>.png
+```
+
+Run commands from this folder, so the muscle map in `config/exercises.toml` is found. Each export holds your full history, so import the newest one whenever you like. Your corrections and decisions are kept.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `import FILE` | Import a Strong export (replaces stored workouts, keeps your corrections) |
+| `workouts` · `show [last\|DATE]` | List sessions; one session set by set |
+| `history EXERCISE` | One lift session by session: top set, e1RM, volume, PRs |
+| `prs [EXERCISE]` · `prs --recent 30d` | Current bests; rep maxes and PR timeline; recent PRs |
+| `stats` | Frequency, streaks, weekly or monthly volume |
+| `muscles` | Hard sets per muscle group per week, against a 10–20 target |
+| `exercises` | Everything you've logged; `--unmapped` for exercises missing a muscle mapping |
+| `check` · `fix` | Review flagged sets; correct set values directly |
+| `merge review` · `merge add/undo/list/separate/forget` | Combine similar exercises (optionally with an offset) or keep them separate |
+| `corrections` · `corrections revert/restore ID` | The log of every change, and undoing or redoing one |
+| `workouts unmerge START` | Split an automatically merged workout back out |
+| `plot …` | Charts: progress, volume, calendar, duration, frequency, rep PRs, dashboard, and more (`fitness plot --help`) |
+| `import-health FILE` · `bodyweight` | Bodyweight from Apple Health, used for assisted lifts |
+| `export` | Sets, sessions, exercises, PRs or corrections as CSV or JSON |
+| `config show` · `config set KEY VALUE` | Settings: placeholder bodyweight, merge gap, suspect-duration limit |
+| `gui` | The desktop app (optional install) |
+
+Global options `--db PATH` and `--config PATH` go before the command (`fitness --db test.db workouts`). Most read commands take `--raw` to ignore all corrections. `fitness COMMAND --help` lists every option.
+
+## Desktop app
+
+`pip install -e '.[gui]'`, then `fitness gui` (or `fitness-gui`). It uses the same database and settings as the CLI, with tabs for an overview, workouts, exercise history and progress charts, PRs, the corrections log, and a Review tab for flags and similar exercises. Newer versions add charts, muscle-group and bodyweight tabs.
+
+![Exercises tab: history and progress chart](docs/images/gui_exercises.png)
+
+More screenshots: [overview](docs/images/gui_overview.png), [review](docs/images/gui_review.png).
+
+## Charts
 
 | | |
 |---|---|
@@ -88,30 +63,20 @@ fitness plot dashboard --out summary.pdf
 
 ![Training calendar](docs/images/plot_calendar.png)
 
-The chart functions live in `fitness_aggregator.plots` (`plot_progress`, `plot_volume`, … `plot_dashboard`). Each takes the DataFrames from `fitness_aggregator.metrics` and returns a `matplotlib.figure.Figure` without touching pyplot, so a GUI can embed the same charts.
+## Documentation
 
-Data is stored in `~/.fitness_aggregator/lifts.db` (override with `--db` or `$FITNESS_AGGREGATOR_DB`). Settings come from `config/settings.toml` when run from this folder (override with `--config`).
+- **[User guide](docs/USER_GUIDE.md)**: the full walkthrough, from exporting from Strong to backups, with real output and an FAQ.
+- **[Architecture](docs/ARCHITECTURE.md)**: layers, the corrections model, schema, and how to add a command, chart or importer.
+- **[PLAN.md](PLAN.md)**: the design, milestone status, and what's next.
 
-## Desktop app (optional)
-
-A PySide6 window over the same database and settings as the CLI: overview stats, workouts set by set, exercise history with a progress chart, PRs, the corrections log (revert/restore), and a Review tab for data-entry flags and similar exercises. File → Import Strong export… imports an export after showing what will change.
-
-```bash
-pip install -e '.[gui]'              # adds PySide6 and matplotlib
-fitness gui                          # or: fitness-gui
-fitness --db other.db gui            # --db/--config work as for every command (fitness-gui --db other.db)
-```
-
-![Exercises tab: history and progress chart](docs/images/gui_exercises.png)
-
-More screenshots: [overview](docs/images/gui_overview.png), [review](docs/images/gui_review.png).
-
-## Development setup
-
-Requires Python 3.11+.
+## Development
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
-.venv/bin/pytest
+.venv/bin/pip install -e '.[dev]'       # pytest and ruff (add gui to run the GUI tests)
+.venv/bin/pytest -q
+.venv/bin/ruff check src tests
 ```
+
+CI runs the tests on Python 3.11 and 3.13 and lints the files that are already clean. See [Architecture → Tests, lint and CI](docs/ARCHITECTURE.md#tests-lint-and-ci).
+
+Data lives in `~/.fitness_aggregator/lifts.db` unless you pass `--db` or set `$FITNESS_AGGREGATOR_DB`.

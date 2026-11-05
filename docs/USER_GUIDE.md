@@ -290,8 +290,8 @@ When you start a new exercise in Strong, `fitness exercises --unmapped` lists it
 Every `fitness plot …` command saves a PNG in `./plots/` and prints the path. `--out FILE` picks the name and format (`.png`, `.svg` or `.pdf`), and `--show` opens a window instead, if you have a display.
 
 ```bash
-fitness plot progress "hip abductor" --trend        # e1RM over time, PRs starred, 30-day trend
-fitness plot progress squat "leg press" --split     # several lifts, one panel each
+fitness plot progress "hip abductor (machine)" --trend   # e1RM over time, PRs starred, 30-day trend
+fitness plot progress "squat (barbell)" "leg press" --split   # several lifts, one panel each
 fitness plot progress "pull up" --metric assistance # assistance only, lower is better
 fitness plot volume --by month                      # bars stacked by workout name
 fitness plot calendar                               # training days, darker = more volume
