@@ -48,8 +48,8 @@ def test_parse_xml_units_daily_means_and_counts():
     assert list(days) == [date(2026, 6, 1), date(2026, 7, 15), date(2026, 9, 10)]
     assert days[date(2026, 6, 1)].lb == 182.0 and days[date(2026, 6, 1)].readings == 2
     assert days[date(2026, 6, 1)].source == "Health, Smart Scale"
-    assert days[date(2026, 7, 15)].lb == pytest.approx(176.37)  # 80 kg
-    assert days[date(2026, 9, 10)].lb == pytest.approx((78.5 * 2.20462262185 + 174) / 2, abs=0.01)
+    assert days[date(2026, 7, 15)].lb == 176.4  # 80 kg
+    assert days[date(2026, 9, 10)].lb == 173.5  # mean of 78.5 kg and 174 lb
     assert len(r.warnings) == 2
     assert any("isn't a number" in w for w in r.warnings)
     assert any("implausible" in w for w in r.warnings)
@@ -121,7 +121,7 @@ def test_store_replace_and_diff(tmp_path):
     store.apply_bodyweight_import(plan)
     entries = store.bodyweight_entries()
     assert [d for d, _ in entries] == [datetime(2026, 6, 2), datetime(2026, 6, 3)]
-    assert entries[0][1] == 182.0 and entries[1][1] == pytest.approx(176.37)
+    assert entries[0][1] == 182.0 and entries[1][1] == 176.4
     assert store.last_health_import()["days"] == 2
 
     again = store.plan_bodyweight_import(parse_apple_health(second).days, second)

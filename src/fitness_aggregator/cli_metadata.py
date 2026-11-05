@@ -287,9 +287,9 @@ def bodyweight(
     for n in (30, 90, 365):
         change = bw.change_over(n)
         if change is not None:
-            trends.append(f"{n} days {change:+.1f} lb")
+            trends.append(f"{change:+.1f} lb vs {n} days earlier")
     if trends:
-        console.print("Change over the last " + ", ".join(trends) + ".")
+        console.print("Latest " + ", ".join(trends) + ".")
 
     shown = days if last <= 0 else days[-last:]
     table = Table(box=None, header_style="bold", pad_edge=False)

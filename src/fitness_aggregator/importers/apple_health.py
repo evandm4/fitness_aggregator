@@ -34,7 +34,7 @@ class HealthParseError(Exception):
 @dataclass(frozen=True)
 class DailyWeight:
     day: date
-    lb: float  # mean of the day's readings, rounded to 0.01
+    lb: float  # mean of the day's readings, rounded to 0.1 lb (scale precision)
     readings: int
     source: str  # source names, comma separated
 
@@ -115,12 +115,12 @@ def parse_health_xml(fh: IO[bytes]) -> HealthResult:
         raise HealthParseError("not an Apple Health export (no <HealthData> root element)")
 
     days = [
-        DailyWeight(d, round(sum(v) / len(v), 2), len(v), ", ".join(sorted(sources[d])))
+        DailyWeight(d, round(sum(v) / len(v), 1), len(v), ", ".join(sorted(sources[d])))
         for d, v in sorted(readings.items())
     ]
     if days:
         stats.first, stats.last = days[0].day, days[-1].day
-    warnings = [f"{n} record(s) skipped: {reason} (e.g. {ex})" for reason, (n, ex) in problems.items()]
+    warnings = [f"{reason}: {n:,} (e.g. {ex})" for reason, (n, ex) in problems.items()]
     return HealthResult(days, stats, warnings)
 
 
