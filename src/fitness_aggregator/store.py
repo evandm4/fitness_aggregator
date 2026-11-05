@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -121,6 +122,26 @@ class RemovalsNotConfirmed(ImportRefused):
     pass
 
 
+class StoreError(ValueError, RuntimeError):
+    """The database can't be opened or written (corrupt, read-only, newer schema). The message is for the user.
+
+    A ValueError so the CLI's existing ``except ValueError`` handlers print it as a one-line error.
+    """
+
+
+def _db_error_message(path: Path, exc: BaseException) -> str:
+    text = str(exc)
+    if isinstance(exc, sqlite3.DatabaseError) and "not a database" in text:
+        return f"{path} is not a fitness_aggregator database, or it is damaged ({text})"
+    if "readonly" in text or "read-only" in text:
+        return f"can't write to the database {path}: it is read-only (check the file's permissions)"
+    if isinstance(exc, OSError):
+        return f"can't create the database {path}: {exc.strerror or exc}"
+    if isinstance(exc, sqlite3.Error):
+        return f"database {path}: {text}"
+    return text
+
+
 def default_db_path() -> Path:
     if os.environ.get(DB_ENV_VAR):
         return Path(os.environ[DB_ENV_VAR])
@@ -218,12 +239,32 @@ def describe_edit(old: Workout, new: Workout) -> str:
 class Store:
     def __init__(self, path: str | os.PathLike | None = None):
         self.path = Path(path) if path else default_db_path()
-        if str(self.path) != ":memory:":
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA foreign_keys = ON")
-        self._init_schema()
+        self.conn = None
+        self._workouts_cache: tuple[tuple[int, int], list[Workout]] | None = None
+        try:
+            if str(self.path) != ":memory:":
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.conn = sqlite3.connect(self.path)
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("PRAGMA foreign_keys = ON")
+            self._init_schema()
+        except (OSError, sqlite3.Error, RuntimeError) as exc:
+            if self.conn is not None:
+                self.conn.close()
+            raise StoreError(_db_error_message(self.path, exc)) from exc
+
+    @contextmanager
+    def _writing(self):
+        """A write transaction; a read-only or locked database raises StoreError instead of sqlite3's error."""
+        try:
+            with self.conn:
+                yield
+        except sqlite3.OperationalError as exc:
+            raise StoreError(_db_error_message(self.path, exc)) from exc
+
+    def _data_version(self) -> tuple[int, int]:
+        """Changes when this connection writes (total_changes) or another one commits (data_version)."""
+        return self.conn.total_changes, self.conn.execute("PRAGMA data_version").fetchone()[0]
 
     def close(self) -> None:
         self.conn.close()
@@ -255,6 +296,17 @@ class Store:
     # --- raw data ---------------------------------------------------------
 
     def load_workouts(self) -> list[Workout]:
+        """Raw workouts, oldest first.
+
+        Cached until the database changes, so the returned workouts are shared
+        between calls: treat them as read-only (fixes and merges work on copies).
+        """
+        version = self._data_version()
+        if self._workouts_cache is None or self._workouts_cache[0] != version:
+            self._workouts_cache = (version, self._read_workouts())
+        return list(self._workouts_cache[1])
+
+    def _read_workouts(self) -> list[Workout]:
         workouts: dict[str, Workout] = {}
         for r in self.conn.execute("SELECT * FROM workouts ORDER BY started_at"):
             workouts[r["started_at"]] = Workout(
@@ -366,7 +418,7 @@ class Store:
         if not plan.has_changes:
             return ImportReport(plan=plan, corrections=ReconcileResult(), applied=False)
 
-        with self.conn:
+        with self._writing():
             self._replace_workouts(plan.result.workouts)
             reconciled = self._refresh_corrections(settings)
             self.conn.execute(
@@ -484,7 +536,7 @@ class Store:
 
     def refresh_corrections(self, settings: Settings) -> ReconcileResult:
         """Recompute automatic corrections and re-check yours (after a settings change, for example)."""
-        with self.conn:
+        with self._writing():
             return self._refresh_corrections(settings)
 
     def set_correction_status(
@@ -516,7 +568,7 @@ class Store:
                 others.pop(current.target["exercise"], None)
                 merges.check_merge(current.target["exercise"], current.after["into"], others,
                                    self.exercise_names(workouts))
-        with self.conn:
+        with self._writing():
             self.conn.execute(
                 "UPDATE corrections SET status = ?, updated_at = ? WHERE id = ?",
                 (status, _iso(_now()), correction_id),
@@ -570,7 +622,7 @@ class Store:
         )
         planned = fixes.plan_value_fix(workout, exercise, occurrence, changes, existing)
         now = _iso(_now())
-        with self.conn:
+        with self._writing():
             if existing is None:
                 cur = self._insert_correction(planned, now)
                 correction_id = cur.lastrowid
@@ -612,7 +664,7 @@ class Store:
 
     def dismiss_flags(self, keys: Iterable[str]) -> None:
         now = _iso(_now())
-        with self.conn:
+        with self._writing():
             self.conn.executemany(
                 "INSERT OR REPLACE INTO dismissed_flags (flag_key, dismissed_at) VALUES (?, ?)",
                 [(k, now) for k in keys],
@@ -637,7 +689,7 @@ class Store:
         planned = merges.plan_merge(source, into, offset, factor)
         existing = next((c for c in self.corrections(type_=corr.EXERCISE_MERGE) if c.target == planned.target), None)
         now = _iso(_now())
-        with self.conn:
+        with self._writing():
             if existing is None:
                 correction_id = self._insert_correction(planned, now).lastrowid
             else:
@@ -667,7 +719,7 @@ class Store:
         names = sorted(set(names))
         pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1:]]
         now = _iso(_now())
-        with self.conn:
+        with self._writing():
             self.conn.executemany(
                 "INSERT OR REPLACE INTO separate_exercises (a, b, decided_at) VALUES (?, ?, ?)",
                 [(a, b, now) for a, b in pairs],
@@ -675,7 +727,7 @@ class Store:
         return len(pairs)
 
     def forget_separate(self, a: str, b: str) -> bool:
-        with self.conn:
+        with self._writing():
             cur = self.conn.execute("DELETE FROM separate_exercises WHERE a = ? AND b = ?", tuple(sorted((a, b))))
         return cur.rowcount > 0
 
