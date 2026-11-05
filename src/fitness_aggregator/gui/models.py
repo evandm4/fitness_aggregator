@@ -38,6 +38,7 @@ class Column:
     sort: Callable[[dict], Any] | None = None   # sort key; default row[key]
     align: Qt.AlignmentFlag = LEFT
     color: Callable[[dict], str | None] | None = None
+    background: Callable[[dict], str | None] | None = None
     tooltip: Callable[[dict], str] | None = None
 
     def display(self, row: dict) -> str:
@@ -126,6 +127,9 @@ class RowTableModel(QAbstractTableModel):
             return int(col.align)
         if role == Qt.ForegroundRole and col.color:
             c = col.color(row)
+            return QColor(c) if c else None
+        if role == Qt.BackgroundRole and col.background:
+            c = col.background(row)
             return QColor(c) if c else None
         if role == Qt.ToolTipRole:
             return col.tooltip(row) if col.tooltip else col.display(row)

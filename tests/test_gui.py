@@ -85,7 +85,8 @@ def make_window(qapp, db):
     windows = []
 
     def make(dialogs=None):
-        w = MainWindow(Controller(Store(db), Settings(), today=TODAY), dialogs or ScriptedDialogs())
+        w = MainWindow(Controller(Store(db), Settings(), today=TODAY), dialogs or ScriptedDialogs(),
+                       background=False)
         w.resize(1280, 800)
         windows.append(w)
         return w
@@ -104,7 +105,9 @@ def _session_row(win, day: str) -> int:
 @needs_export
 def test_every_tab_is_populated(make_window):
     w = make_window()
-    assert w.tabs.count() == 6
+    assert [w.tabs.tabText(i) for i in range(w.tabs.count())] == [
+        "Overview", "Workouts", "Exercises", "PRs", "Charts", "Muscles", "Bodyweight", "Corrections", "Review (11)"]
+    assert w.stack.currentWidget() is w.tabs
     assert w.overview.cards["Sessions"].text() == "103"
     assert w.overview.cards["Total volume"].text().endswith("lb")
     assert "3" in w.overview.flags_label.text() and "8" in w.overview.groups_label.text()
@@ -117,7 +120,6 @@ def test_every_tab_is_populated(make_window):
     assert w.corrections.model.rowCount() == 3
     assert w.review.flags_model.rowCount() == 3
     assert w.review.groups_model.rowCount() == 8
-    assert w.tabs.tabText(5) == "Review (11)"
 
 
 @needs_export
@@ -146,9 +148,14 @@ def test_selecting_an_exercise_fills_history_and_chart(make_window):
     assert w.exercises.history_model.rowCount() == 24
     newest = w.exercises.history_model.row(0)
     assert newest["top"] == "300 lb × 8" and "e1RM" in newest["prs"]
-    ax = w.exercises.chart.figure.axes[0]
-    assert len(ax.lines) == 2  # e1RM and top set
-    assert len(ax.collections[0].get_offsets()) > 0  # PR markers
+    fig = w.exercises.chart.figure
+    assert fig.get_suptitle() == "Estimated 1RM: Leg Extension (Machine)"  # the shared plot_progress
+    ax = fig.axes[0]
+    assert len(ax.lines) == 1  # e1RM
+    stars = [c for c in ax.collections if len(c.get_offsets()) and c.get_sizes()[0] == 120]
+    assert stars  # PR markers
+    w.exercises.metric_combo.setCurrentIndex(w.exercises.metric_combo.findData("top"))
+    assert w.exercises.chart.figure.get_suptitle() == "Top set: Leg Extension (Machine)"
 
 
 @needs_export
@@ -271,7 +278,7 @@ def test_bad_file_shows_an_error(qapp, tmp_path):
     bad = tmp_path / "bad.csv"
     bad.write_text("not,a,strong,export\n")
     dialogs = ScriptedDialogs()
-    w = MainWindow(Controller(Store(tmp_path / "empty.db"), Settings(), today=TODAY), dialogs)
+    w = MainWindow(Controller(Store(tmp_path / "empty.db"), Settings(), today=TODAY), dialogs, background=False)
     assert w.workouts.model.rowCount() == 0
     assert w.import_export(str(bad)) is None
     assert dialogs.errors

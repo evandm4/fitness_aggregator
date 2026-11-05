@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import math
+import zipfile
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -19,11 +20,12 @@ import pandas as pd
 from .. import corrections as corr
 from .. import merges, metrics, outliers, similarity
 from .. import settings as settings_mod
-from ..bodyweight import Bodyweight
+from ..bodyweight import Bodyweight, BodyweightPlan, DayValue
 from ..catalog import ASSISTED, LOADED, TIMED, UNLOADED, Catalog
 from ..corrections import Correction, ReconcileResult, format_duration
 from ..fixes import describe_set
 from ..importers import parse_strong_csv
+from ..importers.apple_health import HealthParseError, HealthResult, parse_apple_health
 from ..models import SetType, WorkoutSet
 from ..sessions import Session
 from ..settings import Settings
@@ -42,6 +44,9 @@ TIER_TEXT = {
     similarity.POSSIBLE: "Possibly the same (similar names)",
 }
 RECENT_PR_DAYS = 30
+LOW_SETS, HIGH_SETS = 10, 20  # weekly hard sets, as ``fitness muscles`` and the sets-per-muscle chart
+MUSCLE_WEEKS = 12
+HEALTH_ERRORS = (HealthParseError, zipfile.BadZipFile, OSError)
 
 
 # --- small formatting helpers --------------------------------------------------
@@ -214,6 +219,52 @@ class Snapshot:
     candidates: list[similarity.CandidateGroup]
     corrections: list[Correction]
     active_merges: dict[str, merges.Merge]
+    muscle_sets: pd.DataFrame
+    bodyweight_days: list[DayValue]
+    last_health_import: dict | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.sessions
+
+
+def build_snapshot(store: Store, settings: Settings, today: datetime, formula: str = "epley") -> Snapshot:
+    """Load everything the tabs show. Only reads ``store``, so it can run on a worker
+    thread with its own ``Store`` connection (see ``Controller.load_snapshot``)."""
+    workouts = store.load_workouts()
+    catalog = Catalog.build(workouts)
+    sessions = store.sessions()
+    bodyweight = Bodyweight(settings.bodyweight_lb, store.bodyweight_entries())
+    df = metrics.sets_frame(sessions, catalog, bodyweight)
+    sessions_df = metrics.sessions_frame(sessions)
+    if df.empty:
+        events = bests = pd.DataFrame()
+        summary = metrics.exercise_summary(df)
+    else:
+        events = metrics.pr_events(df, formula)
+        bests = metrics.current_bests(df, formula)
+        summary = metrics.exercise_summary(df).merge(
+            bests[["exercise", "e1rm", "max_seconds", "max_reps"]], on="exercise")
+    return Snapshot(
+        sessions=sessions,
+        catalog=catalog,
+        bodyweight=bodyweight,
+        df=df,
+        sessions_df=sessions_df,
+        events=events,
+        bests=bests,
+        summary=summary,
+        consistency=metrics.consistency(sessions_df, today) if not sessions_df.empty else {},
+        weekly=metrics.period_stats(sessions_df, df, events, "week") if not sessions_df.empty else pd.DataFrame(),
+        flags=store.open_flags(catalog),
+        candidates=store.merge_candidates(),
+        corrections=store.corrections(),
+        active_merges=store.active_merges(),
+        muscle_sets=metrics.weekly_muscle_sets(df, catalog) if not df.empty else pd.DataFrame(
+            columns=["period", "muscle", "sets"]),
+        bodyweight_days=store.bodyweight_days(),
+        last_health_import=store.last_health_import(),
+    )
 
 
 class Controller:
@@ -241,39 +292,25 @@ class Controller:
     # --- loading ---------------------------------------------------------------
 
     def reload(self) -> Snapshot:
-        store = self.store
-        workouts = store.load_workouts()
-        catalog = Catalog.build(workouts)
-        sessions = store.sessions()
-        bodyweight = Bodyweight(self.settings.bodyweight_lb)
-        df = metrics.sets_frame(sessions, catalog, bodyweight)
-        sessions_df = metrics.sessions_frame(sessions)
-        if df.empty:
-            events = bests = pd.DataFrame()
-            summary = metrics.exercise_summary(df)
-        else:
-            events = metrics.pr_events(df, self.formula)
-            bests = metrics.current_bests(df, self.formula)
-            summary = metrics.exercise_summary(df).merge(
-                bests[["exercise", "e1rm", "max_seconds", "max_reps"]], on="exercise")
-        self.snapshot = Snapshot(
-            sessions=sessions,
-            catalog=catalog,
-            bodyweight=bodyweight,
-            df=df,
-            sessions_df=sessions_df,
-            events=events,
-            bests=bests,
-            summary=summary,
-            consistency=metrics.consistency(sessions_df, self.today) if not sessions_df.empty else {},
-            weekly=metrics.period_stats(sessions_df, df, events, "week") if not sessions_df.empty else pd.DataFrame(),
-            flags=store.open_flags(catalog),
-            candidates=store.merge_candidates(),
-            corrections=store.corrections(),
-            active_merges=store.active_merges(),
-        )
+        """Reload synchronously on this thread's connection."""
+        return self.set_snapshot(build_snapshot(self.store, self.settings, self.today, self.formula))
+
+    @property
+    def can_load_elsewhere(self) -> bool:
+        """False for an in-memory database, which another connection can't see."""
+        return str(self.store.path) != ":memory:"
+
+    def load_snapshot(self) -> Snapshot:
+        """Build a snapshot on a fresh connection (safe on a worker thread). Doesn't install it."""
+        if not self.can_load_elsewhere:
+            return build_snapshot(self.store, self.settings, self.today, self.formula)
+        with Store(self.store.path) as store:
+            return build_snapshot(store, self.settings, self.today, self.formula)
+
+    def set_snapshot(self, snapshot: Snapshot) -> Snapshot:
+        self.snapshot = snapshot
         self._history_cache.clear()
-        return self.snapshot
+        return snapshot
 
     @property
     def snap(self) -> Snapshot:
@@ -597,7 +634,15 @@ class Controller:
 
     def plan_import(self, path: str | Path) -> ImportPlan:
         """Parse an export and work out what would change. Raises StrongParseError."""
-        return self.store.plan_import(parse_strong_csv(path), path)
+        return self.plan_parsed(self.parse_export(path), path)
+
+    @staticmethod
+    def parse_export(path: str | Path):
+        """Parse a Strong export without touching the database (safe on a worker thread)."""
+        return parse_strong_csv(path)
+
+    def plan_parsed(self, parsed, path: str | Path) -> ImportPlan:
+        return self.store.plan_import(parsed, path)
 
     def apply_import(self, plan: ImportPlan, *, allow_removals: bool, force: bool) -> tuple[ImportReport, str]:
         report = self.store.apply_import(plan, self.settings, allow_removals=allow_removals, force=force)
@@ -606,3 +651,169 @@ class Controller:
             ids = {c.key: c.id for c in self.store.corrections()}
             lines += ["", "Corrections changed by this import:"] + describe_reconcile(report.corrections, ids)
         return report, "\n".join(lines)
+
+    # --- muscles -----------------------------------------------------------------------------
+
+    def muscle_table(self, last: int = MUSCLE_WEEKS) -> tuple[list[pd.Period], list[dict]]:
+        """(the last ``last`` weeks, one row per muscle) from ``metrics.weekly_muscle_sets``.
+
+        Each row has ``muscle``, ``label``, ``avg`` (over the complete weeks shown) and, per
+        period ``p``, ``row[p]`` = sets and ``row[("status", p)]`` = ``zero``, ``partial``
+        (the week is still in progress), ``low`` (< 10), ``high`` (> 20) or ``ok``.
+        """
+        from ..catalog import MUSCLES
+
+        wms = self.snap.muscle_sets
+        if wms is None or wms.empty:
+            return [], []
+        grid = wms.pivot(index="muscle", columns="period", values="sets")
+        order = [m for m in MUSCLES if m in grid.index] + [m for m in grid.index if m not in MUSCLES]
+        grid = grid.loc[order]
+        periods = list(grid.columns)[-last:] if last > 0 else list(grid.columns)
+        today = pd.Timestamp(self.today)
+        partial = {p for p in periods if p.start_time <= today <= p.end_time}
+        complete = [p for p in periods if p not in partial] or periods
+        rows = []
+        for muscle, values in grid.iterrows():
+            row = {"muscle": muscle, "label": muscle.replace("_", " "), "avg": float(values[complete].mean())}
+            for p in periods:
+                v = float(values[p])
+                row[p] = v
+                row[("status", p)] = ("zero" if v == 0 else "partial" if p in partial
+                                      else "low" if v < LOW_SETS else "high" if v > HIGH_SETS else "ok")
+            rows.append(row)
+        return periods, rows
+
+    def muscle_notes(self) -> list[str]:
+        """Which exercises' muscles are guessed, and which aren't counted, as in ``fitness muscles``."""
+        df = self.snap.df
+        if df.empty:
+            return []
+        catalog = self.snap.catalog
+        names = sorted(set(df.loc[df["set_type"].isin(metrics.HARD_SET_TYPES), "exercise"]))
+        guessed = [n for n in names if catalog.is_guessed(n)]
+        uncounted = [n for n in names if not catalog.has_mapping(n) and not catalog.is_guessed(n)]
+        notes = []
+        if guessed:
+            notes.append(f"Muscles are guessed from the name for {len(guessed)} exercise(s) not in "
+                         "config/exercises.toml (fitness exercises --unmapped lists them).")
+        if uncounted:
+            notes.append(f"Not counted (no muscles known): {', '.join(uncounted)}.")
+        return notes
+
+    # --- bodyweight ------------------------------------------------------------------------------
+
+    def bodyweight_rows(self) -> list[dict]:
+        days = self.snap.bodyweight_days
+        rows = []
+        for i, d in enumerate(days):
+            change = None if i == 0 else d.lb - days[i - 1].lb
+            rows.append({"date": pd.Timestamp(d.day), "lb": d.lb, "change": change, "source": d.source})
+        return rows
+
+    def bodyweight_summary(self) -> str:
+        """Rich text for the Bodyweight tab, like ``fitness bodyweight``."""
+        days = self.snap.bodyweight_days
+        placeholder = self.settings.bodyweight_lb
+        if not days:
+            return (f"No bodyweight entries yet. Assisted-lift loads use the placeholder <b>{placeholder:g} lb</b> "
+                    "(change it with <code>fitness config set bodyweight_lb N</code>).<br>"
+                    "Import real weights with File → Import Apple Health export…")
+        lo, hi, latest = min(days, key=lambda d: d.lb), max(days, key=lambda d: d.lb), days[-1]
+        lines = [f"<b>{len(days):,} days</b> of bodyweight, {days[0].day} → {latest.day}. "
+                 f"Latest <b>{latest.lb:,.1f} lb</b>. Lowest {lo.lb:,.1f} lb ({lo.day}), "
+                 f"highest {hi.lb:,.1f} lb ({hi.day})."]
+        trends = [f"{c:+.1f} lb vs {n} days earlier" for n in (30, 90, 365)
+                  if (c := self.snap.bodyweight.change_over(n)) is not None]
+        if trends:
+            lines.append("Latest " + ", ".join(trends) + ".")
+        note = (f"Assisted-lift loads use the latest entry on or before each workout, not the "
+                f"{placeholder:g} lb placeholder.")
+        info = self.snap.last_health_import
+        if info:
+            note += f" Last imported {info['imported_at'][:10]} from {html.escape(info['source_path'])}."
+        lines.append(f"<span style='color:#52514e'>{note}</span>")
+        return "<br>".join(lines)
+
+    def plan_health_import(self, path: str | Path) -> tuple[HealthResult, BodyweightPlan]:
+        """Parse an Apple Health export and compare it with stored bodyweight.
+
+        Raises HealthParseError, zipfile.BadZipFile or OSError, and ValueError when the
+        export has no usable bodyweight readings.
+        """
+        result = self.parse_health(path)
+        return result, self.plan_health(result, path)
+
+    @staticmethod
+    def parse_health(path: str | Path) -> HealthResult:
+        """Parse an Apple Health export without touching the database (safe on a worker thread)."""
+        result = parse_apple_health(path)
+        if not result.days:
+            raise ValueError("no usable bodyweight readings in this export; nothing imported.")
+        return result
+
+    def plan_health(self, result: HealthResult, path: str | Path) -> BodyweightPlan:
+        return self.store.plan_bodyweight_import(result.days, path)
+
+    @staticmethod
+    def describe_health_plan(result: HealthResult, plan: BodyweightPlan, limit: int = 10) -> str:
+        """The same summary as ``fitness import-health``, as plain text."""
+        s = result.stats
+        units = ", ".join(f"{n:,} in {u}" for u, n in sorted(s.units.items()))
+        line = f"{Path(plan.source_path).name}: {s.records:,} body-mass records"
+        if units:
+            line += f" ({units})"
+        line += f" on {len(result.days):,} days, {s.first} → {s.last}; {s.other_records:,} other records ignored."
+        lines = [line]
+        if s.invalid:
+            lines.append(f"{s.invalid:,} record(s) skipped:")
+            lines += [f"  {w}" for w in result.warnings]
+        multi = sum(1 for d in result.days if d.readings > 1)
+        if multi:
+            lines.append(f"{multi:,} day(s) with several readings use that day's average.")
+        if not plan.has_changes:
+            lines.append(f"No changes: this export matches the stored bodyweight ({plan.unchanged:,} days).")
+            return "\n".join(lines)
+        if plan.is_first_import:
+            lines.append(f"First Health import: {len(plan.new):,} days of bodyweight.")
+            return "\n".join(lines)
+        lines.append(f"{len(plan.new)} new, {len(plan.changed)} changed, {len(plan.removed)} removed, "
+                     f"{plan.unchanged:,} unchanged.")
+        lines += [f"  new      {d.day}  {d.lb:,.1f} lb" for d in plan.new[-limit:]]
+        lines += [f"  changed  {new.day}  {old.lb:,.1f} → {new.lb:,.1f} lb" for old, new in plan.changed[:limit]]
+        lines += [f"  removed  {d.day}  {d.lb:,.1f} lb (deleted in Health?)" for d in plan.removed[:limit]]
+        hidden = sum(max(len(xs) - limit, 0) for xs in (plan.new, plan.changed, plan.removed))
+        if hidden:
+            lines.append(f"  … and {hidden} more")
+        return "\n".join(lines)
+
+    def apply_health_import(self, plan: BodyweightPlan) -> str:
+        if not self.store.apply_bodyweight_import(plan):
+            return "No changes."
+        first, latest = plan.incoming[0], plan.incoming[-1]
+        return (f"Imported. {len(plan.incoming):,} days of bodyweight stored ({first.day} → {latest.day}, "
+                f"latest {latest.lb:,.1f} lb). Assisted-lift loads now use these entries instead of the placeholder.")
+
+    # --- misc ------------------------------------------------------------------------------------
+
+    def exercise_names(self) -> list[str]:
+        """Exercises, most sessions first (for pickers)."""
+        summary = self.snap.summary
+        if summary.empty:
+            return []
+        return list(summary.sort_values(["sessions", "exercise"], ascending=[False, True])["exercise"])
+
+    def about_text(self) -> str:
+        from .. import __version__
+
+        snap = self.snapshot
+        counts = ""
+        if snap is not None:
+            counts = (f"<p>{len(snap.sessions):,} sessions · {len(snap.summary):,} exercises · "
+                      f"{len(snap.bodyweight_days):,} days of bodyweight</p>")
+        return (f"<h3>Fitness Aggregator {html.escape(__version__)}</h3>"
+                "<p>Imports Strong workout exports, and bodyweight from Apple Health, into a local SQLite "
+                "database. Corrections are logged and reversible. Shows history, PRs, volume, sets per "
+                "muscle and the same charts as the <code>fitness</code> command line.</p>"
+                f"<p>Database: <code>{html.escape(str(self.store.path))}</code></p>{counts}"
+                "<p>Your data stays on this computer.</p>")
