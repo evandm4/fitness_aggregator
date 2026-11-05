@@ -15,7 +15,7 @@ import re
 import sys
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import pandas as pd
 import typer
@@ -49,7 +49,7 @@ def default_path(name: str) -> Path:
     return PLOT_DIR / f"{name}_{date.today():%Y-%m-%d}.png"
 
 
-def save_figure(fig: "Figure", path: Path) -> Path:
+def save_figure(fig: Figure, path: Path) -> Path:
     """Save with the Agg canvas (vector formats pick their own canvas)."""
     from matplotlib.backends.backend_agg import FigureCanvasAgg
 
@@ -66,7 +66,7 @@ def _has_display() -> bool:
     return True
 
 
-def _show(console: Console, fig: "Figure") -> None:
+def _show(console: Console, fig: Figure) -> None:
     from .cli import _fail
 
     if not _has_display():
@@ -89,13 +89,17 @@ def _show(console: Console, fig: "Figure") -> None:
         _fail(console, f"couldn't open a window: {escape(str(exc))}. Leave out --show to save a PNG instead.")
 
 
-def _output(console: Console, fig: "Figure", name: str, out: Optional[Path], show: bool) -> None:
+def _output(console: Console, fig: Figure, name: str, out: Path | None, show: bool) -> None:
     from .cli import _fail
 
     if out is not None and out.suffix.lower() not in FORMATS:
         _fail(console, f"--out must end in {', '.join(FORMATS)}; got {escape(str(out))}.")
     if out is not None or not show:
-        path = save_figure(fig, out or default_path(name))
+        path = out or default_path(name)
+        try:
+            path = save_figure(fig, path)
+        except OSError as exc:
+            _fail(console, f"can't write {escape(str(path))}: {escape(exc.strerror or str(exc))}")
         console.print(f"Saved {escape(str(path))}")
     if show:
         _show(console, fig)
@@ -139,15 +143,11 @@ def footnotes(a, df: pd.DataFrame, *, sessions: bool = False, loads: bool = True
     return notes
 
 
-def _since(console, df: pd.DataFrame, column: str, since: Optional[str]) -> pd.DataFrame:
-    from .cli import _fail, _filter_dates
+def _since(console, df: pd.DataFrame, column: str, since: str | None) -> pd.DataFrame:
+    """Rows on or after ``since``; a bad date is a usage error (from ``cli._parse_date``)."""
+    from .cli import _filter_dates
 
-    if not since:
-        return df
-    try:
-        return _filter_dates(df, column, since, None)
-    except ValueError:
-        _fail(console, f"--since expects a date like 2026-09-01; got {escape(since)!r}.")
+    return _filter_dates(df, column, since, None) if since else df
 
 
 def _console(ctx: typer.Context) -> Console:
@@ -169,14 +169,15 @@ def _setup(ctx: typer.Context, raw: bool, include_warmups: bool = False):
 def progress(
     ctx: typer.Context,
     exercises: list[str] = typer.Argument(..., help="One or more exercises (a unique part of the name works)."),
-    metric: Optional[str] = typer.Option(None, "--metric", help="e1rm, top, volume, reps, seconds, or assistance "
-                                         "(default: e1rm; seconds for holds, reps for bodyweight, assistance for assisted)."),
+    metric: str | None = typer.Option(None, "--metric", help="e1rm, top, volume, reps, seconds, or assistance "
+                                      "(default: e1rm; seconds for holds, reps for bodyweight, "
+                                      "assistance for assisted)."),
     trend: bool = typer.Option(False, "--trend", help="Add a 30-day rolling average."),
     split: bool = typer.Option(False, "--split", help="One panel per exercise instead of overlaying them."),
-    since: Optional[str] = typer.Option(None, "--since", help=SINCE_HELP),
+    since: str | None = typer.Option(None, "--since", help=SINCE_HELP),
     formula: str = typer.Option("epley", "--formula", help="e1RM formula: epley or brzycki."),
     raw: bool = typer.Option(False, "--raw", help="Ignore corrections (no merging, no set fixes)."),
-    out: Optional[Path] = typer.Option(None, "--out", help=OUT_HELP),
+    out: Path | None = typer.Option(None, "--out", help=OUT_HELP),
     show: bool = typer.Option(False, "--show", help=SHOW_HELP),
 ):
     """Progress over time for one or more exercises, PRs starred."""
@@ -210,10 +211,10 @@ def volume(
     ctx: typer.Context,
     by: str = typer.Option("week", "--by", help="week or month."),
     group: str = typer.Option("workout", "--group", help="workout (stack by workout name) or none."),
-    since: Optional[str] = typer.Option(None, "--since", help=SINCE_HELP),
+    since: str | None = typer.Option(None, "--since", help=SINCE_HELP),
     include_warmups: bool = typer.Option(False, "--include-warmups", help="Count warm-up sets too."),
     raw: bool = typer.Option(False, "--raw", help="Ignore corrections."),
-    out: Optional[Path] = typer.Option(None, "--out", help=OUT_HELP),
+    out: Path | None = typer.Option(None, "--out", help=OUT_HELP),
     show: bool = typer.Option(False, "--show", help=SHOW_HELP),
 ):
     """Weekly or monthly training volume, optionally stacked by workout."""
@@ -236,10 +237,10 @@ def volume(
 @plot_app.command()
 def calendar(
     ctx: typer.Context,
-    since: Optional[str] = typer.Option(None, "--since", help=SINCE_HELP),
-    weeks: Optional[int] = typer.Option(None, "--weeks", help="Show at most this many recent weeks (default 53)."),
+    since: str | None = typer.Option(None, "--since", help=SINCE_HELP),
+    weeks: int | None = typer.Option(None, "--weeks", min=1, help="Show at most this many recent weeks (default 53)."),
     raw: bool = typer.Option(False, "--raw", help="Ignore corrections."),
-    out: Optional[Path] = typer.Option(None, "--out", help=OUT_HELP),
+    out: Path | None = typer.Option(None, "--out", help=OUT_HELP),
     show: bool = typer.Option(False, "--show", help=SHOW_HELP),
 ):
     """GitHub-style heatmap of training days, coloured by volume."""
@@ -255,9 +256,9 @@ def calendar(
 @plot_app.command()
 def duration(
     ctx: typer.Context,
-    since: Optional[str] = typer.Option(None, "--since", help=SINCE_HELP),
+    since: str | None = typer.Option(None, "--since", help=SINCE_HELP),
     raw: bool = typer.Option(False, "--raw", help="Ignore corrections (durations are then all trusted)."),
-    out: Optional[Path] = typer.Option(None, "--out", help=OUT_HELP),
+    out: Path | None = typer.Option(None, "--out", help=OUT_HELP),
     show: bool = typer.Option(False, "--show", help=SHOW_HELP),
 ):
     """Session duration over time (untrusted durations left out)."""
@@ -276,9 +277,9 @@ def duration(
 def frequency(
     ctx: typer.Context,
     top: int = typer.Option(20, "--top", help="How many exercises to show."),
-    since: Optional[str] = typer.Option(None, "--since", help=SINCE_HELP),
+    since: str | None = typer.Option(None, "--since", help=SINCE_HELP),
     raw: bool = typer.Option(False, "--raw", help="Ignore corrections."),
-    out: Optional[Path] = typer.Option(None, "--out", help=OUT_HELP),
+    out: Path | None = typer.Option(None, "--out", help=OUT_HELP),
     show: bool = typer.Option(False, "--show", help=SHOW_HELP),
 ):
     """Sessions per exercise, most-done first; lifts not done lately are greyed."""
@@ -299,7 +300,7 @@ def rep_prs(
     ctx: typer.Context,
     exercise: str = typer.Argument(..., help="Exercise name (or a unique part of it)."),
     raw: bool = typer.Option(False, "--raw", help="Ignore corrections."),
-    out: Optional[Path] = typer.Option(None, "--out", help=OUT_HELP),
+    out: Path | None = typer.Option(None, "--out", help=OUT_HELP),
     show: bool = typer.Option(False, "--show", help=SHOW_HELP),
 ):
     """Best load at each rep count 1–15, now vs. 30 days before your latest session."""
@@ -320,7 +321,7 @@ def dashboard(
     ctx: typer.Context,
     formula: str = typer.Option("epley", "--formula", help="e1RM formula: epley or brzycki."),
     raw: bool = typer.Option(False, "--raw", help="Ignore corrections."),
-    out: Optional[Path] = typer.Option(None, "--out", help=OUT_HELP),
+    out: Path | None = typer.Option(None, "--out", help=OUT_HELP),
     show: bool = typer.Option(False, "--show", help=SHOW_HELP),
 ):
     """One-glance summary: headline numbers, calendar, volume, duration, top lifts, frequency."""
