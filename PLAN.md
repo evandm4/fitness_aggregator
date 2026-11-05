@@ -27,15 +27,15 @@ Date, Workout Name, Duration, Exercise Name, Set Order, Weight, Reps, Distance, 
    - `D` is a drop set (50). Count it toward volume but not as a "top set".
    - `F` is a set to failure (2).
    - `Rest Timer` is not a set. Its `Seconds` value is the rest after the previous set. Attach it to that set as `rest_seconds` rather than throwing it away.
-2. **Identify a workout by its `Date` timestamp, not by calendar day.** On 2026-06-02 and 2026-09-15 there are two workouts on the same day.
-3. **`Duration` is a string** (`"1h 26m"`, `"47m"`, `"1h"`) and is repeated on every row. Two values are clearly a timer left running: `14h 7m` (2026-08-28) and `22h 43m` (2026-10-22). Flag any duration over about 4h as suspect and leave it out of duration stats.
+2. **Identify a workout by its `Date` timestamp, not by calendar day, then merge workouts that are close together** (§2a). On 2026-06-02 a 3-minute workout is followed 3 minutes later by a 47-minute one, so these become one session. On 2026-09-15, Pull and Legs are 73 minutes apart, so they stay separate.
+3. **`Duration` is a string** (`"1h 26m"`, `"47m"`, `"1h"`) and is repeated on every row. Two values are clearly a timer left running: `14h 7m` (2026-08-28) and `22h 43m` (2026-10-22). Flag any duration over 4h as suspect and leave it out of duration stats. The 2026-08-28 timer ran until 20 seconds before the next morning's workout started, so a suspect duration must never be used to decide whether two workouts are close enough to merge (§2a).
 4. **Timed exercises.** `Plank` (and `Dessert`) have weight 0 and reps 0, with the value in `Seconds`. Track these by hold time instead of load.
 5. **Assisted exercises.** For `Pull Up (Assisted)` and `Chest Dip (Assisted)`, `Weight` is the *assistance*, so **less is better**. If bodyweight is known, effective load = bodyweight − assistance. If not, plot the assistance on an inverted axis.
 6. **Bodyweight exercises at 0 lb** (`Supported Leg Raise`, `Decline Sit-ups`): track reps, not load.
 7. **Unused columns.** `Distance` is always 0, `RPE` is always empty, and `Notes` has one value. Parse them anyway, because future exports may use them.
-8. **Data-entry errors.** On 2026-06-04, `Preacher Curl (Machine)` has weight and reps swapped (8 lb × 80, 8 × 60, 6 × 50). Add a corrections mechanism and outlier detection (for example, reps > 30 on a weighted lift).
-9. **Inconsistent exercise names.** Examples: `Tricep Pushdown` vs `Triceps Pushdown`, `Hip Abductor (Machine)` vs `Hip Abductor 2 (Machine)`, and `Crunch (Machine)` vs `Crunch (Machine 2)`. Equipment goes in parentheses. Handle this with an alias/metadata file (§4).
-10. **Units are not stated.** Assume lb, and make it configurable.
+8. **Data-entry errors.** On 2026-06-04, `Preacher Curl (Machine)` has weight and reps swapped (8 lb × 80, 8 × 60, 6 × 50). Detect likely errors (for example, reps > 30 on a weighted lift) and ask you how to fix each one. Every fix is logged (§2b).
+9. **Similar exercise names.** Examples: `Tricep Pushdown` vs `Triceps Pushdown`, `Hip Abductor (Machine)` vs `Hip Abductor 2 (Machine)`, and `Crunch (Machine)` vs `Crunch (Machine 2)`. The program never merges these on its own. It shows you each similar group, and you choose whether to combine them, optionally with a weight offset (§4).
+10. **Units.** All weights are lb. Store lb internally. A `--units kg` display option can come later.
 
 ---
 
@@ -48,7 +48,7 @@ fitness_aggregator/
 ├── pyproject.toml
 ├── PLAN.md
 ├── config/
-│   └── exercises.toml        # aliases, muscle groups, flags (assisted, timed, bodyweight)
+│   └── exercises.toml        # muscle groups, flags (assisted, timed, bodyweight); no merging
 ├── src/fitness_aggregator/
 │   ├── __init__.py
 │   ├── models.py             # dataclasses + SetType enum
@@ -56,7 +56,10 @@ fitness_aggregator/
 │   │   ├── __init__.py
 │   │   └── strong_csv.py     # parse Strong export -> models
 │   ├── store.py              # SQLite persistence, idempotent import
-│   ├── catalog.py            # exercise normalization & metadata (loads exercises.toml)
+│   ├── sessions.py           # merge workouts that are close together in time
+│   ├── corrections.py        # corrections log: record, list, revert
+│   ├── similarity.py         # find similar exercise names, suggest weight offsets
+│   ├── catalog.py            # exercise metadata (loads exercises.toml)
 │   ├── metrics.py            # pure functions -> DataFrames (e1RM, volume, PRs, ...)
 │   ├── plots/
 │   │   ├── __init__.py
@@ -115,14 +118,51 @@ class Workout:
 
 ### Storage (`store.py`)
 
-Use SQLite (default `~/.fitness_aggregator/lifts.db`, overridable with `--db`) with three tables: `workouts`, `sets`, and `corrections`.
+Use SQLite (default `~/.fitness_aggregator/lifts.db`, overridable with `--db`) with these tables:
+
+| Table | Contents |
+|---|---|
+| `workouts`, `sets` | Raw imported data, exactly as exported. Never modified after import. |
+| `corrections` | Every change applied on top of the raw data (§2b) |
+| `exercise_links` | Your merge decisions for similar exercises: combined, combined with offset, or kept separate (§4) |
+| `settings` | Bodyweight, workout merge gap, and similar options |
 
 Why SQLite instead of re-reading the CSV on every run:
 - **Overlapping exports.** Each Strong export contains the full history. Importing a newer export should be idempotent: dedupe on `(started_at, exercise, set_type, position)`.
-- **Corrections persist.** For example, the fix for the swapped Preacher Curl survives re-imports.
+- **Corrections and merge decisions persist.** For example, the fix for the swapped Preacher Curl survives re-imports, and you are not asked about Hip Abductor again.
 - A future GUI or manual-entry feature can write to the same store.
 
-Metrics read from the store into a single tidy DataFrame, one row per set, and work from there.
+Because raw data is never edited, every correction and merge can be undone. Metrics build a tidy DataFrame (one row per set) by reading the raw sets and applying, in order: workout merges, then data fixes, then exercise merges and offsets. Each row keeps its original values and records which corrections touched it.
+
+### 2a. Merging workouts that are close together (`sessions.py`)
+
+The rule: merge workout B into the preceding workout A when **B starts within 60 minutes of A ending** (end = start + duration). The gap can be changed with `fitness config set merge-gap 60`.
+
+- If A's duration is suspect (over 4h), don't trust its end time. Estimate it as start + your median workout duration (about 1h15m in this data). Without this, the 2026-08-28 Legs workout, whose timer ran 14h until 20 seconds before the next morning's Pull workout, would be merged into it.
+- A merged session keeps the earliest start time and the longer workout's name. Its duration runs from the first start to the last end. Exercises keep their order.
+- Effect on the sample data: 2026-06-02 (3m and 47m workouts, 3 minutes apart) is merged into one session. 2026-09-15 (Pull and Legs, 73 minutes apart) and 2026-08-28 (Legs with the runaway timer) stay separate.
+- Every merge is written to the corrections log and can be reverted individually.
+
+### 2b. Corrections log (`corrections.py`)
+
+**Every change the system makes to your data, automatic or chosen by you, is recorded and reported.** Nothing is changed silently.
+
+Each entry records: id, timestamp, type, source (`auto` or `user`), the affected workout/exercise/sets, values before and after, and a reason in plain English.
+
+| Type | Source | Example reason |
+|---|---|---|
+| `workout_merge` | auto | "Merged 2026-06-02 14:06 workout into 14:00 workout: started 3 min after it ended (threshold 60 min)" |
+| `duration_suspect` | auto | "Duration 14h 7m excluded from duration stats: over 4h, probably a timer left running" |
+| `value_fix` | user | "Swapped weight and reps on 3 Preacher Curl (Machine) sets, 2026-06-04" |
+| `exercise_merge` | user | "Hip Abductor 2 (Machine) combined into Hip Abductor (Machine) with −55 lb offset" |
+| `outlier_flag` | auto | "Reps 80 at 8 lb on a weighted lift: flagged for review, not changed" |
+
+How corrections are reported:
+- **On import:** a summary of what was new and every correction applied, for example "2 workouts merged, 2 durations excluded, 1 outlier flagged for review".
+- **`fitness corrections`:** the full log, filterable by `--type`, `--auto`/`--user`, `--exercise`, or `--since`. `fitness corrections revert ID` undoes one entry.
+- **In output:** `history` and `show` mark corrected rows (for example with `*`) and list the reasons beneath the table. Plots built from corrected data get a small footnote such as "Includes 1 exercise merge (−55 lb offset); see `fitness corrections`."
+
+Parsing steps that change no values, such as attaching rest timers to sets or excluding warm-ups, are reported as counts on import, not as individual log entries.
 
 ---
 
@@ -152,12 +192,57 @@ All metrics are pure functions of the form `DataFrame -> DataFrame`, which keeps
 
 ---
 
-## 4. Exercise catalog (`config/exercises.toml`)
+## 4. Combining similar exercises (interactive)
+
+The program does not decide which exercises are "the same". It finds candidates and you decide, because only you know that, for example, Hip Abductor 2 is a machine at another gym that is much easier at the same weight.
+
+### Finding candidates (`similarity.py`)
+
+Exercise names are grouped as similar when they match after normalizing:
+- `Tricep` and `Triceps` treated as the same word
+- trailing machine numbers removed (`Hip Abductor 2 (Machine)` → `Hip Abductor (Machine)`, `Crunch (Machine 2)` → `Crunch (Machine)`)
+- case, punctuation, and word order ignored, with a fuzzy-match fallback using `difflib` (stdlib)
+
+Groups you have already decided on are not shown again. New exercise names that appear in later imports are offered for review automatically.
+
+### Review flow: `fitness merge review`
+
+For each candidate group, the program shows the exercises side by side, then asks what to do:
+
+The example below uses the real numbers from your data:
+
+```
+Similar exercises (group 1 of N):
+
+                                 Sessions  Date range                Last/first top sets
+  [1] Hip Abductor (Machine)          12   2026-06-02 → 2026-08-12   last 3: 145–160 lb × 14
+  [2] Hip Abductor 2 (Machine)         9   2026-08-22 → 2026-11-01   first 3: 205 lb × 12–14
+
+  You switched from [1] to [2] on 2026-08-22 (no overlap).
+  Around the switch, [2] sets were about 55 lb heavier at similar reps.
+  Suggested: −55 lb on Hip Abductor 2 (or ×0.74).
+
+  (c) combine as-is
+  (o) combine with weight offset
+  (k) keep separate (don't ask again)
+  (s) skip for now
+  (p) plot both on one chart first
+>
+```
+
+- **Combine as-is:** pick which name to keep. The other exercise's sets are counted under that name.
+- **Combine with offset:** pick which name to keep and which side to adjust, then accept the suggested offset or enter your own. The offset is an amount in lb added to or subtracted from every set of one exercise (for example −55 lb on every Hip Abductor 2 set). A percentage factor (for example ×0.74) is also available, since machine differences are often proportional.
+  - **How the suggested offset is calculated:** compare top sets at similar rep counts from the sessions **on either side of the switch**: the last 3 sessions of one exercise and the first 3 of the other, or the sessions closest in time if you used both during the same period. Comparing whole-history averages would count your real progress as machine difference. The suggestion is rounded to 5 lb. It's only a starting point; you confirm or override it.
+- **Plot both first:** shows the progress chart of both exercises together, plus a preview of the combined line with the offset applied, before you decide.
+- **The original value is kept for every adjusted set.** `history` shows both, for example `150 lb (205 − 55)`. Offsets apply to PRs, e1RM, and volume.
+
+Every decision becomes an `exercise_merge` entry in the corrections log and can be undone with `fitness merge undo` or `fitness corrections revert`. Non-interactive commands (`fitness merge add …`) do the same thing for scripting, and a future GUI can call the same functions with a dialog in place of the prompt.
+
+## 5. Exercise metadata (`config/exercises.toml`)
+
+This file is only for metadata. It never merges exercises.
 
 ```toml
-[aliases]
-"Tricep Pushdown (Cable - V Bar)" = "Triceps Pushdown (Cable - V Bar)"
-
 [exercise."Pull Up (Assisted)"]
 muscles = ["back", "biceps"]
 assisted = true
@@ -171,26 +256,38 @@ muscles = ["chest", "triceps", "front_delts"]
 ```
 
 - Parse names as `Base Movement (Equipment)`. This allows grouping either by base movement ("all bench press variants") or by exact exercise.
-- **Keep different machines separate by default** (`Hip Abductor` vs `Hip Abductor 2`). They load differently, so mixing them would hide real progression. Alias them only on request.
+- An exercise combined with another (§4) uses the metadata of the name you kept.
 - `fitness exercises --unmapped` lists exercises that have no muscle-group entry yet, so the file can be filled in gradually.
 
 ---
 
-## 5. CLI design (`cli.py`)
+## 6. CLI design (`cli.py`)
 
-Entry point: `fitness`. Global options: `--db PATH`, `--units lb|kg`, `--include-warmups`, `--since DATE`, `--until DATE`.
+Entry point: `fitness`. Global options: `--db PATH`, `--include-warmups`, `--since DATE`, `--until DATE`, `--raw` (ignore all corrections and merges).
 
 ```
-fitness import weights_11_3_26.txt          # idempotent; prints a summary of what was new
+fitness import weights_11_3_26.txt          # idempotent; prints new data + corrections applied
 fitness exercises [--search curl] [--sort count|recent|name] [--unmapped]
 fitness workouts [--last 10]                # list sessions
 fitness show [DATE|last]                    # one workout, set by set
 fitness history "Bench Press (Barbell)"     # session-by-session table for one lift
 fitness prs [EXERCISE] [--recent 30d]       # PR table / recent PRs
 fitness stats [--by week|month]             # summary: sessions, volume, sets/muscle
-fitness check                               # data-quality report: outliers, suspect durations, unmapped names
+fitness check                               # interactive review of flagged outliers (swap / edit / ignore)
 fitness fix --workout 2026-06-04T13:53:53 --exercise "Preacher Curl (Machine)" --swap-weight-reps
+
+fitness corrections [--type T] [--auto|--user] [--exercise E] [--since D]   # full corrections log
+fitness corrections revert ID
+
+fitness merge review                        # interactive similar-exercise review (§4)
+fitness merge list                          # current merge decisions and offsets
+fitness merge add "Hip Abductor 2 (Machine)" --into "Hip Abductor (Machine)" [--offset -55 | --factor 0.74]
+fitness merge separate "Crunch (Machine)" "Crunch (Machine 2)"
+fitness merge undo "Hip Abductor 2 (Machine)"
+
+fitness workouts unmerge 2026-06-02T14:06:32   # undo an automatic workout merge
 fitness config set bodyweight 180
+fitness config set merge-gap 60             # minutes
 
 fitness plot progress "Bench Press (Barbell)" ["Incline Bench Press (Dumbbell)" ...]
              [--metric e1rm|top|volume|reps|seconds] [--trend]
@@ -207,7 +304,7 @@ Plot output: by default, save a PNG to `./plots/<name>_<date>.png` and print the
 
 ---
 
-## 6. Graphs (matplotlib)
+## 7. Graphs (matplotlib)
 
 | Command | Chart | Notes |
 |---|---|---|
@@ -220,27 +317,31 @@ Plot output: by default, save a PNG to `./plots/<name>_<date>.png` and print the
 | `frequency` | Horizontal bars: sessions per exercise | Spot neglected lifts |
 | `dashboard` | Multi-panel figure combining the above | One-glance summary PNG |
 
-Every plot function has the signature `plot_x(df, **opts) -> matplotlib.figure.Figure`. The function never calls `plt.show()`; the caller (CLI now, GUI later) decides whether to show, save, or embed the figure.
+Every plot function has the signature `plot_x(df, **opts) -> matplotlib.figure.Figure`. The function never calls `plt.show()`; the caller (CLI now, GUI later) decides whether to show, save, or embed the figure. A plot that uses corrected or merged data gets a footnote saying so (§2b). In `progress`, sets adjusted by an offset are drawn with a different marker.
 
 ---
 
-## 7. Milestones
+## 8. Milestones
 
 1. **Parser + models.** `strong_csv.py` handles every quirk in §1. Tests use small fixture files, plus a smoke test on the real file: 104 workouts, 1,962 sets, and the rest timers attached.
-2. **Store + import.** SQLite schema, idempotent import, `import` / `workouts` / `show` commands.
-3. **Metrics + text commands.** `history`, `prs`, `stats`, `exercises`, `check`, `fix`.
-4. **Core plots.** `progress`, `volume`, `calendar`.
-5. **Catalog.** `exercises.toml` with muscle groups and aliases, then `sets-per-muscle`, `rep-prs`, and `dashboard`.
-6. **Polish.** Units, bodyweight setting, and remaining plots.
+2. **Store, import, corrections log.** SQLite schema, idempotent import, automatic workout merging and suspect-duration flags, all recorded in the log. Commands: `import`, `workouts`, `show`, `corrections`. The test for this step checks that the sample data ends up with 103 sessions and exactly one workout merge, on 2026-06-02.
+3. **Metrics + text commands.** `history`, `prs`, `stats`, `exercises`, plus `check` / `fix` for flagged outliers.
+4. **Similar-exercise merging.** Candidate detection, offset suggestion, `merge review` and the other `merge` commands.
+5. **Core plots.** `progress` (including the merge preview), `volume`, `calendar`.
+6. **Metadata + remaining plots.** `exercises.toml` muscle groups, then `sets-per-muscle`, `rep-prs`, `duration`, `frequency`, and `dashboard`. Bodyweight setting.
 
 **Later / out of scope for v1:** GUI (PySide6 desktop or a Streamlit web dashboard, both reusing `metrics` and `plots`); manual set logging from the CLI; a bodyweight log; importers for other apps (Hevy, etc.) behind the same `importers/` interface.
 
 ---
 
-## 8. Open questions
+## 9. Decisions and open questions
 
-1. Are weights in **lb**?
-2. Should `Hip Abductor 2 (Machine)`, `Crunch (Machine 2)`, and the other variants stay separate from the original machines (the recommendation) or be merged?
-3. What bodyweight should be used for assisted pull-ups and dips? A single number, or tracked over time?
-4. Will you export the full history from Strong each time (overlapping files)? That is what the dedupe logic assumes.
-5. On 2026-06-02 there is a 3-minute workout followed by a 47-minute one. Should those count as one session or two?
+**Decided**
+- Weights are lb.
+- Similar exercises are combined only when you choose to, through the interactive review, with optional weight offsets (§4).
+- Workouts that start within 60 minutes of the previous one ending are merged automatically (§2a).
+- Every correction the system makes is logged, reported, and reversible (§2b).
+
+**Still open**
+1. What bodyweight should be used for assisted pull-ups and dips? A single number, or tracked over time?
+2. Will you export the full history from Strong each time (overlapping files)? That is what the dedupe logic assumes.
