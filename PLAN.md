@@ -1,6 +1,6 @@
 # Weightlifting Tracker: Plan
 
-A Python program that imports weightlifting logs, stores them, works out progression stats, and draws graphs. Version 1 is CLI-only with matplotlib graphs. The code is split into layers so a GUI can be added later without rewriting the core.
+A Python program that imports weightlifting logs, stores them, works out progression stats, and draws graphs. It started CLI-only with matplotlib graphs, split into layers so a GUI could be added without rewriting the core; an optional PySide6 desktop app now sits on the same layers. User-facing docs are in [docs/USER_GUIDE.md](docs/USER_GUIDE.md) and the developer map in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Status is in §8.
 
 ---
 
@@ -35,48 +35,46 @@ Date, Workout Name, Duration, Exercise Name, Set Order, Weight, Reps, Distance, 
 7. **Unused columns.** `Distance` is always 0, `RPE` is always empty, and `Notes` has one value. Parse them anyway, because future exports may use them.
 8. **Data-entry errors.** On 2026-06-04, `Preacher Curl (Machine)` has weight and reps swapped (8 lb × 80, 8 × 60, 6 × 50). Detect likely errors (for example, reps > 30 on a weighted lift) and ask you how to fix each one. Every fix is logged (§2b).
 9. **Similar exercise names.** Examples: `Tricep Pushdown` vs `Triceps Pushdown`, `Hip Abductor (Machine)` vs `Hip Abductor 2 (Machine)`, and `Crunch (Machine)` vs `Crunch (Machine 2)`. The program never merges these on its own. It shows you each similar group, and you choose whether to combine them, optionally with a weight offset (§4).
-10. **Units.** All weights are lb. Store lb internally. A `--units kg` display option can come later.
+10. **Units.** All weights are lb. Store lb internally. A `--units kg` display option is still to do (§10).
 
 ---
 
 ## 2. Architecture
 
-The rule for GUI-readiness: **only `cli.py` knows about the terminal.** Everything else takes and returns plain data: dataclasses, pandas DataFrames, and matplotlib `Figure` objects. A future Qt/Tk/web GUI then calls the same functions and embeds the figures with `FigureCanvas`.
+The rule for GUI-readiness: **only the CLI modules know about the terminal, and only `gui/` knows about Qt.** Everything else takes and returns plain data: dataclasses, pandas DataFrames, and matplotlib `Figure` objects. The desktop app calls the same functions and embeds the figures with `FigureCanvas`. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) has the full layer diagram.
 
 ```
 fitness_aggregator/
 ├── pyproject.toml
-├── PLAN.md
+├── PLAN.md, README.md, docs/      # USER_GUIDE.md, ARCHITECTURE.md, images/
+├── .github/workflows/tests.yml    # CI: pytest on 3.11 and 3.13, ruff
 ├── config/
-│   ├── settings.toml         # bodyweight placeholder, merge gap, thresholds
-│   └── exercises.toml        # muscle groups, flags (assisted, timed, unloaded); no merging
+│   ├── settings.toml         # bodyweight placeholder, merge gap, suspect-duration limit
+│   └── exercises.toml        # primary/secondary muscles and optional kind per exercise; no merging
 ├── src/fitness_aggregator/
-│   ├── __init__.py
 │   ├── models.py             # dataclasses + SetType enum
 │   ├── importers/
-│   │   ├── __init__.py
 │   │   ├── strong_csv.py     # parse Strong export -> models
-│   │   └── apple_health.py   # (later) bodyweight history from Apple Health export
-│   ├── store.py              # SQLite persistence, idempotent import
-│   ├── sessions.py           # merge workouts that are close together in time
-│   ├── bodyweight.py         # bodyweight_at(date): logged value or placeholder
-│   ├── corrections.py        # corrections log: record, list, revert
-│   ├── similarity.py         # find similar exercise names, suggest weight offsets
-│   ├── catalog.py            # exercise metadata (loads exercises.toml)
-│   ├── metrics.py            # pure functions -> DataFrames (e1RM, volume, PRs, ...)
-│   ├── plots/
-│   │   ├── __init__.py
-│   │   ├── style.py          # shared matplotlib style
-│   │   ├── progress.py
-│   │   ├── volume.py
-│   │   ├── calendar.py
-│   │   └── dashboard.py
-│   └── cli.py                # Typer app; thin wrapper over the above
-└── tests/
-    ├── fixtures/             # small hand-made CSVs covering each quirk
-    ├── test_strong_csv.py
-    ├── test_metrics.py
-    └── test_store.py
+│   │   └── apple_health.py   # daily bodyweight from Apple Health export.zip / export.xml
+│   ├── store.py              # SQLite persistence, two-step full-history import, corrected view
+│   ├── corrections.py        # corrections log: types, statuses, reconcile
+│   ├── sessions.py           # automatic workout merges + suspect durations; group workouts into sessions
+│   ├── fixes.py              # value_fix corrections (set fixes)
+│   ├── merges.py             # exercise_merge corrections (combine, offsets, factors)
+│   ├── outliers.py           # data-entry flags for `fitness check` (suggestions only)
+│   ├── similarity.py         # similar exercise names, suggested weight offsets
+│   ├── catalog.py            # exercise kinds and muscles (loads exercises.toml, keyword guesses)
+│   ├── bodyweight.py         # Bodyweight.at(date): logged value or placeholder
+│   ├── settings.py           # settings file lookup, load, set
+│   ├── metrics.py            # pure functions -> DataFrames (e1RM, volume, PRs, muscle sets, ...)
+│   ├── plots/                # style, progress, volume, calendar, duration, frequency, rep_prs,
+│   │                         # sets_per_muscle, merge_preview, dashboard
+│   ├── cli.py                # Typer app: import, workouts, show, history, prs, stats, check, fix, merge, ...
+│   ├── cli_metadata.py       # muscles, import-health, bodyweight
+│   ├── cli_plots.py          # plot subcommands
+│   ├── cli_export.py         # export
+│   └── gui/                  # PySide6 app: app.py, controller.py (no Qt), window.py, models.py, charts.py
+└── tests/                    # ~350 tests; fixtures/ plus the real export in the repo root
 ```
 
 ### Dependencies
@@ -85,7 +83,8 @@ fitness_aggregator/
 - **matplotlib**: graphs
 - **typer** + **rich**: CLI subcommands and readable tables
 - **sqlite3** (stdlib): storage
-- **pytest**: tests
+- **pytest** and **ruff**: tests and lint (`.[dev]`)
+- **PySide6**: the optional desktop app (`.[gui]`)
 
 ### Data model (`models.py`)
 
@@ -125,19 +124,24 @@ Use SQLite (default `~/.fitness_aggregator/lifts.db`, overridable with `--db`) w
 
 | Table | Contents |
 |---|---|
+| `meta` | `schema_version` (currently 4) |
 | `workouts`, `sets` | Raw imported data, exactly as exported. Never modified after import. |
 | `corrections` | Every change applied on top of the raw data (§2b) |
-| `separate_exercises` | Pairs of exercises you chose to keep separate (§4). Combinations themselves are `exercise_merge` corrections. |
-| `bodyweight` | Dated bodyweight entries (empty until an Apple Health import exists, §2d) |
+| `imports` | One row per import: file, SHA-256, latest workout, counts, summary |
+| `dismissed_flags` | Data-entry flags you marked "not an error" in `fitness check` (schema 2) |
+| `separate_exercises` | Pairs of exercises you chose to keep separate (§4, schema 3). Combinations themselves are `exercise_merge` corrections. |
+| `bodyweight` | Daily bodyweight from Apple Health (§2d, schema 4) |
+
+Migrations so far only add tables; a database from a newer schema is refused.
 
 Settings are kept in `config/settings.toml`, which you can edit by hand or change with `fitness config set`.
 
 Why SQLite instead of re-reading the CSV on every run:
 - **Full-history exports.** Each Strong export contains your entire history, so importing never appends. The newest export replaces the stored raw data, and corrections and merge decisions are reapplied on top (§2c).
 - **Corrections and merge decisions persist.** For example, the fix for the swapped Preacher Curl survives re-imports, and you are not asked about Hip Abductor again.
-- A future GUI or manual-entry feature can write to the same store.
+- The desktop app reads and writes the same store, and a future manual-entry feature could too.
 
-Because raw data is never edited, every correction and merge can be undone. Metrics build a tidy DataFrame (one row per set) by reading the raw sets and applying, in order: workout merges, then data fixes, then exercise merges and offsets. Each row keeps its original values and records which corrections touched it.
+Because raw data is never edited, every correction and merge can be undone. Metrics build a tidy DataFrame (one row per set) from `Store.sessions()`, which reads the raw sets and applies, in order: value fixes, then exercise merges and offsets, then groups workouts into sessions using the workout merges. Fixes and merges target raw workout start times and exercise names, so the order doesn't change which sets they hit. Each row keeps its original values and records which corrections touched it.
 
 ### 2a. Merging workouts that are close together (`sessions.py`)
 
@@ -164,7 +168,8 @@ Each entry records: id, timestamp, type, source (`auto` or `user`), the affected
 How corrections are reported:
 - **On import:** a summary of what was new and every correction applied, for example "1 workout merged, 2 durations excluded", plus how many sets are flagged as possible data-entry errors.
 - **Flags are not corrections.** A flagged set changes nothing, so flags aren't log entries. `fitness check` lists them; each is either fixed (which creates a `value_fix` entry) or dismissed (remembered in a `dismissed_flags` table so it isn't raised again). Flag rules: over 30 reps on a weighted set (swap suggested when the swapped weight fits your usual range), a working set over 2.5× your usual top set, and weight with 0 reps on a normal or drop set (failure sets are exempt, since 0 reps there is a missed attempt).
-- **`fitness corrections`:** the full log, filterable by `--type`, `--auto`/`--user`, `--exercise`, or `--since`. `fitness corrections revert ID` undoes one entry.
+- **`fitness corrections`:** the full log, filterable by `--type`, `--auto`/`--user`, `--status`, `--exercise`, or `--since` (`--all` includes obsolete entries). `fitness corrections revert ID` undoes one entry and `restore ID` re-applies it.
+- **Statuses:** `active` (applied), `reverted` (undone by you, and stays undone across re-imports), `obsolete` (an automatic correction whose condition no longer holds, e.g. after a settings change), `stale` (a correction you made whose target changed in a newer export; reported and not applied).
 - **In output:** `history` and `show` mark corrected rows (for example with `*`) and list the reasons beneath the table. Plots built from corrected data get a small footnote such as "Includes 1 exercise merge (-50 lb offset); see `fitness corrections`."
 
 Parsing steps that change no values, such as attaching rest timers to sets or excluding warm-ups, are reported as counts on import, not as individual log entries.
@@ -178,7 +183,7 @@ Every Strong export contains your entire history, so the newest export is the so
   - new workouts
   - workouts edited in Strong (sets added, removed, or changed)
   - workouts removed in Strong (deleted there); these are listed and must be confirmed before they're dropped
-- **Corrections whose target changed.** If you later fix the swapped Preacher Curl in Strong itself, the stored correction no longer matches the data. It's marked as stale and reported rather than silently applied or dropped. You choose to keep or remove it.
+- **Corrections whose target changed.** If you later fix the swapped Preacher Curl in Strong itself, the stored correction no longer matches the data. It's marked as stale and reported rather than silently applied or dropped. A stale correction isn't applied; if a later import matches it again, it applies again automatically. To redo the change on the new data, make a new correction.
 - **Guard against importing an older export.** If the file's latest workout is older than what's stored, the import stops with a warning (override with `--force`). Without this, importing an older file would look like workouts had been deleted.
 - **Re-importing the same file** changes nothing and says so.
 
@@ -193,7 +198,7 @@ What bodyweight affects: effective load for assisted lifts, which feeds their e1
 
 **It's always clear when the placeholder is used.** Output and plots that rely on it say so, for example "Assisted-lift loads use placeholder bodyweight 180 lb". This is a label, not an entry in the corrections log, since no logged data is changed.
 
-**Future Apple Health import.** `fitness import-health export.zip` would read the body-mass records from the Health app's "Export All Health Data" file into the `bodyweight` table. It would follow the same full-history rules as Strong imports (§2c). Derived numbers are never stored, so every effective load and e1RM switches from the placeholder to real dated weights as soon as the import runs. No other code changes are needed.
+**Apple Health import (done, milestone 6).** `fitness import-health export.zip` (or the `export.xml` inside) streams the body-mass records from the Health app's "Export All Health Data" file, converts them to lb, averages each day, skips implausible values, and stores one row per day in the `bodyweight` table. It follows the same full-history rules as Strong imports (§2c): the new export replaces the stored days, and the import lists new, changed and removed days. Derived numbers are never stored, so every effective load and e1RM switches from the placeholder to real dated weights as soon as the import runs. `fitness bodyweight` shows the entries and whether the placeholder is still in use.
 
 ---
 
@@ -213,13 +218,13 @@ All metrics are pure functions of the form `DataFrame -> DataFrame`, which keeps
 - PR timeline: the date each PR was set, for the "PRs this month" view.
 
 **Per workout**
-- Duration (excluding suspect values), total volume, set count, exercise count, and density (volume per minute).
+- Duration (excluding suspect values), total volume, set count, and exercise count. Density (volume per minute) isn't implemented yet.
 - Average rest per exercise, taken from the rest-timer data.
 
 **Over time (weekly/monthly)**
 - Sessions per week, plus streaks and gaps between sessions.
 - Volume and **hard sets per muscle group per week**. This is the standard hypertrophy volume metric and needs the muscle-group map from §4.
-- Split adherence: how many Push, Pull, and Legs sessions per week.
+- Split adherence: `stats` shows sessions and the average per week for each workout name (Push 1, Pull 1, Legs). A week-by-week breakdown isn't done yet.
 - Exercise frequency and "last performed" date, to spot neglected lifts.
 
 ---
@@ -261,31 +266,31 @@ This is the actual output for your data:
 - **Combine as-is:** pick which name to keep (default: the one with more sessions). The other exercise's sets are counted under that name. In a group of three or more you also pick which ones to combine; the rest are recorded as separate from the kept name.
 - **Combine with offset:** pick which name to keep, then accept the suggested adjustment or enter your own: an amount in lb added to every set of the other exercise (`-50`), or a factor (`x0.75`), since machine differences are often proportional. Offsets are offered for weighted and assisted exercises; timed and unloaded exercises can only be combined as-is. Sets with no weight are renamed but not adjusted, and adjusted weights never go below 0.
   - **How the suggested offset is calculated:** compare top sets from the sessions **on either side of the switch**: the last 3 sessions of one exercise and the first 3 of the other, or the closest sessions if you used both during the same period. Comparing whole-history averages would count your real progress as machine difference. Rep counts are evened out with the Epley formula (your kept exercise's weight at the other's average reps), which is why Hip Abductor comes out at −50 lb rather than the −55 lb a raw comparison gives. Assisted exercises compare assistance directly. The suggestion is rounded to 5 lb. It's only a starting point; you confirm or override it.
-- **Preview combined:** shows the 12 sessions nearest the switch as one timeline, with what each set was recorded as and what it counts as after the suggested adjustment. This is a text preview for now; milestone 5 adds the chart.
+- **Preview combined:** shows the 12 sessions nearest the switch as one timeline, with what each set was recorded as and what it counts as after the suggested adjustment. It prints the text timeline and also saves a chart of it (`plots/merge_preview.py`).
 - **The original value is kept for every adjusted set.** `history` shows both, for example `155 lb × 12 (205 − 50)`, with a `†` footnote naming the original exercise, and `show` gives the recorded name and original weights. Offsets apply to PRs, e1RM, and volume.
 - **Names that are combined away still work** in `history` and `prs`: `fitness history "hip abductor 2"` shows the combined history.
 - **New exercise names are picked up automatically.** Each import reports how many groups are waiting for review.
 
-Every decision becomes an `exercise_merge` entry in the corrections log and can be undone with `fitness merge undo` or `fitness corrections revert`. Non-interactive commands (`fitness merge add …`) do the same thing for scripting, and a future GUI can call the same functions with a dialog in place of the prompt.
+Every decision becomes an `exercise_merge` entry in the corrections log and can be undone with `fitness merge undo` or `fitness corrections revert`. Non-interactive commands (`fitness merge add …`) do the same thing for scripting, and the desktop app's Review tab calls the same functions with buttons and dialogs in place of the prompt.
 
 ## 5. Exercise metadata (`config/exercises.toml`)
 
 This file is only for metadata. It never merges exercises.
 
 ```toml
-[exercise."Pull Up (Assisted)"]
-muscles = ["back", "biceps"]
-assisted = true
-
-[exercise."Plank"]
-muscles = ["core"]
-timed = true
-
 [exercise."Bench Press (Barbell)"]
-muscles = ["chest", "triceps", "front_delts"]
+primary = ["chest"]                     # each hard set counts 1
+secondary = ["triceps", "front_delts"]  # ... and 0.5 here
+
+[exercise."Dead Hang"]
+kind = "timed"                          # optional; normally inferred from the name and data
 ```
 
-- Parse names as `Base Movement (Equipment)`. This allows grouping either by base movement ("all bench press variants") or by exact exercise.
+- Muscles come from a fixed list: chest, front_delts, side_delts, rear_delts, triceps, biceps, forearms, lats, upper_back, lower_back, abs, obliques, quads, hamstrings, glutes, adductors, abductors, calves. Unknown names are ignored with a warning.
+- `kind` is one of `loaded`, `assisted`, `timed`, `unloaded`. It's inferred (assisted from the name, timed and unloaded from the data), so the file only needs it when the inference is wrong.
+- Exercises with no entry get a keyword guess ("curl" → biceps), always labelled as a guess.
+
+- Not done yet: parsing names as `Base Movement (Equipment)` to group by base movement ("all bench press variants"). See §10.
 - An exercise combined with another (§4) uses the metadata of the name you kept.
 - `fitness exercises --unmapped` lists exercises that have no muscle-group entry yet, so the file can be filled in gradually.
 
@@ -293,21 +298,23 @@ muscles = ["chest", "triceps", "front_delts"]
 
 ## 6. CLI design (`cli.py`)
 
-Entry point: `fitness`. Global options: `--db PATH`, `--include-warmups`, `--since DATE`, `--until DATE`, `--raw` (ignore all corrections and merges).
+Entry point: `fitness`. Global options (before the command): `--db PATH` and `--config PATH`. `--raw` (ignore all corrections and merges), `--include-warmups`, `--since` and `--until` are per-command options where they make sense. This is the implemented command set; each command's `--help` is the authority on options.
 
 ```
-fitness import weights_11_3_26.txt          # idempotent; prints new data + corrections applied
-fitness exercises [--search curl] [--sort count|recent|name] [--unmapped (milestone 6)]
-fitness workouts [--last 10]                # list sessions
-fitness show [DATE|last]                    # one workout, set by set
+fitness import weights_11_3_26.txt          # prints new/edited/removed workouts + corrections applied
+fitness exercises [--search curl] [--sort count|recent|name] [--unmapped]
+fitness workouts [-n 20 | --all] [--since DATE]   # list sessions
+fitness show [last|DATE|START]              # one workout, set by set
 fitness history "Bench Press (Barbell)"     # session-by-session table for one lift
-fitness prs [EXERCISE] [--recent 30d]       # PR table / recent PRs
-fitness stats [--by week|month]             # summary: sessions, volume, sets/muscle
-fitness check                               # interactive review of flagged outliers (swap / edit / ignore)
-fitness fix --workout 2026-06-04T13:53:53 --exercise "Preacher Curl (Machine)" --swap-weight-reps
+fitness prs [EXERCISE] [--recent 30d] [--sort name|e1rm|recent]
+fitness stats [--by week|month]             # sessions, streaks, volume, PRs per period
+fitness muscles [--by week|month]           # hard sets per muscle group
+fitness check [--list]                      # interactive review of flagged sets (swap / edit / dismiss)
+fitness fix 2026-06-04T13:53 "Preacher Curl (Machine)" --swap-weight-reps [--set 1 ...]
 
-fitness corrections [--type T] [--auto|--user] [--exercise E] [--since D]   # full corrections log
+fitness corrections [--type T] [--auto|--user] [--status S] [--exercise E] [--since D] [--all]
 fitness corrections revert ID
+fitness corrections restore ID
 
 fitness merge review [--list]               # interactive similar-exercise review (§4)
 fitness merge list                          # current merge decisions and offsets
@@ -316,15 +323,18 @@ fitness merge separate "Crunch (Machine)" "Crunch (Machine 2)"
 fitness merge forget "Crunch (Machine)" "Crunch (Machine 2)"   # undo a keep-separate decision
 fitness merge undo "Hip Abductor 2 (Machine)"
 
-fitness workouts unmerge 2026-06-02T14:06:32   # undo an automatic workout merge
-fitness config set merge_gap_minutes 60     # also suspect_duration_hours
-fitness config set bodyweight_lb 180        # placeholder used until real weight data exists
-fitness import-health export.zip            # (later) bodyweight history from Apple Health
+fitness workouts unmerge 2026-06-02T14:06   # undo an automatic workout merge
+fitness config show
+fitness config set merge_gap_minutes 60     # also suspect_duration_hours, bodyweight_lb
+fitness import-health export.zip            # bodyweight history from Apple Health
+fitness bodyweight
+fitness export [--what sets|sessions|exercises|prs|corrections] [--format csv|json] [--out FILE]
+fitness gui                                 # optional desktop app
 
 fitness plot progress "Bench Press (Barbell)" ["Incline Bench Press (Dumbbell)" ...]
-             [--metric e1rm|top|volume|reps|seconds|assistance] [--trend]
-fitness plot volume   [--by week|month] [--group muscle|workout|none]
-fitness plot sets-per-muscle [--by week]
+             [--metric e1rm|top|volume|reps|seconds|assistance] [--trend] [--split]
+fitness plot volume   [--by week|month] [--group workout|none]
+fitness plot sets-per-muscle                # weekly hard sets per muscle, with the 10-20 target band
 fitness plot rep-prs  "Squat (Barbell)"
 fitness plot calendar
 fitness plot duration
@@ -341,30 +351,29 @@ Plot output: by default, save a PNG to `./plots/<name>_<date>.png` and print the
 | Command | Chart | Notes |
 |---|---|---|
 | `progress` | Line over time: e1RM and top-set weight per session | PRs marked, optional rolling trend, several exercises overlaid on one axis or as small multiples |
-| `volume` | Weekly/monthly bars, stacked by muscle group or workout | Shows training load trends |
+| `volume` | Weekly/monthly bars, stacked by workout name (or unstacked) | Shows training load trends. Stacking by muscle group is still to do |
 | `sets-per-muscle` | Lines or heatmap of weekly hard sets per muscle | Optional shaded "target" band (e.g. 10–20 sets) |
 | `rep-prs` | Best weight at each rep count from 1 to 15 | Strength-endurance curve, with the previous best shown faintly for comparison |
-| `calendar` | GitHub-style training-day heatmap | Color by volume or by workout type |
+| `calendar` | GitHub-style training-day heatmap | Coloured by volume |
 | `duration` | Session duration over time | Suspect outliers left out |
 | `frequency` | Horizontal bars: sessions per exercise | Spot neglected lifts |
 | `dashboard` | Multi-panel figure combining the above | One-glance summary PNG |
 
-Every plot function has the signature `plot_x(df, **opts) -> matplotlib.figure.Figure`. The function never calls `plt.show()`; the caller (CLI now, GUI later) decides whether to show, save, or embed the figure. A plot that uses corrected or merged data gets a footnote saying so (§2b). In `progress`, sets adjusted by an offset are drawn with a different marker.
+Every plot function has the signature `plot_x(df, **opts) -> matplotlib.figure.Figure`. The function never calls `plt.show()`; the caller (CLI or GUI) decides whether to show, save, or embed the figure. A plot that uses corrected or merged data gets a footnote saying so (§2b). In `progress`, sets adjusted by an offset are drawn with a different marker.
 
 ---
 
 ## 8. Milestones
 
 1. ✅ **Parser + models.** `strong_csv.py` handles every quirk in §1. Tests use small fixture files, plus a smoke test on the real file: 104 workouts, 1,962 sets, and the rest timers attached.
-2. ✅ **Store, import, corrections log.** SQLite schema, full-history import with change summary (§2c), automatic workout merging and suspect-duration flags, all recorded in the log. Commands: `import`, `workouts`, `show`, `corrections`. The test for this step checks that the sample data ends up with 103 sessions and exactly one workout merge, on 2026-06-02.
-3. ✅ **Metrics + text commands.** `history`, `prs`, `stats`, `exercises`, plus `check` / `fix` for flagged outliers.
+2. ✅ **Store, import, corrections log.** SQLite schema, full-history import with change summary (§2c), automatic workout merging and suspect-duration flags, all recorded in the log. Commands: `import`, `workouts`, `show`, `corrections`. The sample data ends up with 103 sessions and exactly one workout merge, on 2026-06-02.
+3. ✅ **Metrics + text commands.** `history`, `prs`, `stats`, `exercises`, plus `check` / `fix` for flagged sets.
 4. ✅ **Similar-exercise merging.** Candidate detection, offset suggestion, `merge review` and the other `merge` commands.
-5. **Core plots.** `progress` (including a chart version of the merge preview), `volume`, `calendar`.
-6. ✅ **Metadata + Apple Health bodyweight.** `exercises.toml` maps all 103 exercises to primary/secondary muscles (fixed vocabulary, keyword guesses for new names), `metrics.weekly_muscle_sets`, `fitness muscles`, and `fitness exercises --unmapped`. `fitness import-health` / `fitness bodyweight` (schema 4 `bodyweight` table, full-history replace like §2c), and every analysis uses real dated weights when present. The `sets-per-muscle` chart is wired up separately on top of `weekly_muscle_sets`; `rep-prs`, `duration`, `frequency`, and `dashboard` plots belong with the plotting work.
-
-**Later / out of scope for v1:** GUI (PySide6 desktop or a Streamlit web dashboard, both reusing `metrics` and `plots`); manual set logging from the CLI; importers for other apps (Hevy, etc.) behind the same `importers/` interface.
-
----
+5. ✅ **Plots.** `plots/` package with a shared style, and `fitness plot progress`, `volume`, `calendar`, `duration`, `frequency`, `rep-prs` and `dashboard`; `--out` (PNG/SVG/PDF) and `--show`; footnotes for corrections, merges and placeholder bodyweight; and the chart version of the merge preview. 🔄 In progress: a `plot sets-per-muscle` command on top of the existing `plot_sets_per_muscle` chart.
+6. ✅ **Metadata + Apple Health bodyweight.** `exercises.toml` maps all 103 exercises to primary/secondary muscles (fixed vocabulary, keyword guesses for new names), `metrics.weekly_muscle_sets`, `fitness muscles`, and `fitness exercises --unmapped`. `fitness import-health` / `fitness bodyweight` (schema 4 `bodyweight` table, full-history replace like §2c), and every analysis uses real dated weights when present.
+7. ✅ **Desktop app.** Optional PySide6 GUI (`fitness gui` / `fitness-gui`, `.[gui]` extra): overview, workouts, exercise history with progress chart, PRs, corrections (revert/restore), and a Review tab for flags and similar exercises; File → Import with a preview of the changes. A Qt-free `controller.py` runs the same `Store` calls as the CLI. 🔄 In progress: Charts, Muscles and Bodyweight tabs.
+8. ✅ **Export, hardening and CI.** `fitness export` (sets, sessions, exercises, PRs or corrections as CSV/JSON); clear errors for unreadable or newer-schema database files; a workouts cache; GitHub Actions running pytest on Python 3.11 and 3.13 plus ruff. 🔄 In progress: a `--version` flag and error-message polish.
+9. ✅ **Docs.** README front page, [user guide](docs/USER_GUIDE.md), [architecture](docs/ARCHITECTURE.md).
 
 ## 9. Decisions and open questions
 
@@ -377,3 +386,20 @@ Every plot function has the signature `plot_x(df, **opts) -> matplotlib.figure.F
 - Every Strong export contains the full history. The newest import replaces the stored raw data (§2c).
 
 **Still open:** none right now.
+
+---
+
+## 10. What's next
+
+Ideas, roughly in order of usefulness:
+
+- **Manual logging.** `fitness log` to add a set or a workout from the terminal (or a GUI form), stored alongside imported data with its own source so re-imports don't drop it.
+- **Other importers.** Hevy, FitNotes or a generic CSV, behind the same `importers/` interface. Needs a decision on how workouts from two apps are keyed and deduplicated.
+- **Find `exercises.toml` the way settings are found.** Today it's read from `./config/` only, so running from another folder falls back to keyword guesses. A `--exercises` option, an environment variable, or `~/.fitness_aggregator/exercises.toml` would fix that.
+- **Undo a dismissed flag.** There's no command yet to bring back a flag dismissed in `fitness check`.
+- **kg display** (`--units kg`), and support for Strong exports recorded in kg.
+- **Group by base movement** ("all bench press variants") from the `Base Movement (Equipment)` naming.
+- **Volume stacked by muscle group**, and split adherence (Push/Pull/Legs per week) as a stat and a chart.
+- **Dark-mode charts**: a second style in `plots/style.py`, following the system theme in the GUI.
+- **A web dashboard** (for example Streamlit) on the same `metrics` and `plots` functions, for viewing on a phone.
+- **Built-in backups**: `fitness backup` using SQLite's online backup API, and an export of your decisions (corrections, keep-separate pairs, dismissed flags) that can be imported again.
