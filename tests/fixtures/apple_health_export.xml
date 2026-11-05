@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE HealthData [
+<!-- A trimmed copy of the DTD Apple includes at the top of every export -->
+<!ELEMENT HealthData (ExportDate,Me,(Record|Correlation|Workout|ActivitySummary)*)>
+<!ATTLIST HealthData
+  locale CDATA #REQUIRED
+>
+<!ELEMENT ExportDate EMPTY>
+<!ATTLIST ExportDate
+  value CDATA #REQUIRED
+>
+]>
+<HealthData locale="en_US">
+ <ExportDate value="2026-11-03 21:00:00 -0700"/>
+ <Me HKCharacteristicTypeIdentifierDateOfBirth="" HKCharacteristicTypeIdentifierBiologicalSex="HKBiologicalSexMale"/>
+ <Record type="HKQuantityTypeIdentifierStepCount" sourceName="iPhone" unit="count" creationDate="2026-06-01 08:00:00 -0700" startDate="2026-06-01 07:00:00 -0700" endDate="2026-06-01 08:00:00 -0700" value="1200"/>
+ <Record type="HKQuantityTypeIdentifierBodyMass" sourceName="Health" unit="lb" creationDate="2026-06-01 07:12:00 -0700" startDate="2026-06-01 07:12:00 -0700" endDate="2026-06-01 07:12:00 -0700" value="181">
+  <MetadataEntry key="HKWasUserEntered" value="1"/>
+ </Record>
+ <Record type="HKQuantityTypeIdentifierBodyMass" sourceName="Smart Scale" unit="lb" creationDate="2026-06-01 21:30:00 -0700" startDate="2026-06-01 21:30:00 -0700" endDate="2026-06-01 21:30:00 -0700" value="183"/>
+ <Record type="HKQuantityTypeIdentifierBodyMassIndex" sourceName="Smart Scale" unit="count" creationDate="2026-06-01 21:30:00 -0700" startDate="2026-06-01 21:30:00 -0700" endDate="2026-06-01 21:30:00 -0700" value="24.1"/>
+ <Record type="HKQuantityTypeIdentifierBodyMass" sourceName="Smart Scale" unit="kg" creationDate="2026-07-15 06:50:00 -0700" startDate="2026-07-15 06:50:00 -0700" endDate="2026-07-15 06:50:00 -0700" value="80"/>
+ <Record type="HKQuantityTypeIdentifierBodyMass" sourceName="Health" unit="lb" creationDate="2026-07-20 23:59:00 -0700" startDate="2026-07-20 23:59:00 -0700" endDate="2026-07-20 23:59:00 -0700" value="not a number"/>
+ <Record type="HKQuantityTypeIdentifierBodyMass" sourceName="Health" unit="lb" creationDate="2026-07-21 08:00:00 -0700" startDate="2026-07-21 08:00:00 -0700" endDate="2026-07-21 08:00:00 -0700" value="1.8"/>
+ <Correlation type="HKCorrelationTypeIdentifierBloodPressure" sourceName="Cuff" creationDate="2026-08-01 09:00:00 -0700" startDate="2026-08-01 09:00:00 -0700" endDate="2026-08-01 09:00:00 -0700">
+  <Record type="HKQuantityTypeIdentifierBloodPressureSystolic" sourceName="Cuff" unit="mmHg" startDate="2026-08-01 09:00:00 -0700" endDate="2026-08-01 09:00:00 -0700" value="118"/>
+  <Record type="HKQuantityTypeIdentifierBloodPressureDiastolic" sourceName="Cuff" unit="mmHg" startDate="2026-08-01 09:00:00 -0700" endDate="2026-08-01 09:00:00 -0700" value="76"/>
+ </Correlation>
+ <Workout workoutActivityType="HKWorkoutActivityTypeTraditionalStrengthTraining" duration="60" durationUnit="min" sourceName="Watch" startDate="2026-08-02 17:00:00 -0700" endDate="2026-08-02 18:00:00 -0700">
+  <WorkoutEvent type="HKWorkoutEventTypeSegment" date="2026-08-02 17:00:00 -0700"/>
+ </Workout>
+ <Record type="HKQuantityTypeIdentifierBodyMass" sourceName="Smart Scale" unit="kg" creationDate="2026-09-10 07:00:00 -0700" startDate="2026-09-10 07:00:00 -0700" endDate="2026-09-10 07:00:00 -0700" value="78.5"/>
+ <Record type="HKQuantityTypeIdentifierBodyMass" sourceName="Health" unit="lb" creationDate="2026-09-10 19:00:00 -0700" startDate="2026-09-10 19:00:00 -0700" endDate="2026-09-10 19:00:00 -0700" value="174"/>
+ <ActivitySummary dateComponents="2026-09-10" activeEnergyBurned="400" activeEnergyBurnedGoal="500" activeEnergyBurnedUnit="Cal"/>
+</HealthData>

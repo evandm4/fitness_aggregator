@@ -536,7 +536,7 @@ def _analysis(state: State, *, raw: bool = False, include_warmups: bool = False)
     if not sessions:
         state.console.print("No workouts yet. Run [bold]fitness import FILE[/bold] first.")
         raise typer.Exit(0)
-    bodyweight = Bodyweight(state.settings.bodyweight_lb)
+    bodyweight = Bodyweight(state.settings.bodyweight_lb, store.bodyweight_entries())
     df = metrics.sets_frame(sessions, store.catalog(), bodyweight, include_warmups=include_warmups)
     return Analysis(sessions, df, bodyweight)
 
@@ -573,7 +573,11 @@ def _resolve_exercise(console: Console, query: str, names, merged: dict | None =
 
 
 def _bodyweight_note(console: Console, df: pd.DataFrame, bodyweight: Bodyweight) -> None:
-    if bodyweight.uses_placeholder and (df["kind"] == ASSISTED).any():
+    if not (df["kind"] == ASSISTED).any():
+        return
+    if not bodyweight.uses_placeholder:
+        console.print("[dim]Assisted-lift loads use your logged bodyweight (Apple Health). See fitness bodyweight[/dim]")
+    else:
         console.print(
             f"[dim]Assisted-lift loads use placeholder bodyweight {_num(bodyweight.placeholder_lb)} lb "
             "(load = bodyweight − assistance). Change with: fitness config set bodyweight_lb N[/dim]"
@@ -891,13 +895,20 @@ def exercises(
     search: Optional[str] = typer.Option(None, "--search", "-s", help="Only names containing this text."),
     sort: str = typer.Option("count", "--sort", help="count, recent, or name."),
     raw: bool = typer.Option(False, "--raw", help=RAW_HELP),
+    unmapped: bool = typer.Option(False, "--unmapped", help="List exercises with no muscle groups in config/exercises.toml."),
 ):
-    """Every exercise you've logged, with frequency and when you last did it."""
+    """Every exercise you've logged, with frequency, when you last did it, and muscles worked."""
     state = _state(ctx)
     console = state.console
     if sort not in ("count", "recent", "name"):
         _fail(console, "sort by count, recent, or name.")
     a = _analysis(state, raw=raw)
+    catalog = state.store.catalog()
+    if unmapped:
+        from .cli_metadata import print_unmapped
+
+        print_unmapped(console, a.df, catalog, search)
+        return
     summary = metrics.exercise_summary(a.df).merge(
         metrics.current_bests(a.df)[["exercise", "e1rm", "max_seconds", "max_reps"]], on="exercise"
     )
@@ -912,8 +923,12 @@ def exercises(
         return
     now = pd.Timestamp(datetime.now()).normalize()
     table = Table(box=None, header_style="bold", pad_edge=False)
-    for col in ("Exercise", "Kind", "Sessions", "Sets", "First", "Last", "Days ago", "Avg rest", "Best"):
-        table.add_column(col, justify="left" if col in ("Exercise", "Kind", "First", "Last", "Best") else "right")
+    from .cli_metadata import muscles_label
+
+    left = ("Exercise", "Kind", "First", "Last", "Best", "Muscles")
+    for col in ("Exercise", "Kind", "Sessions", "Sets", "First", "Last", "Days ago", "Avg rest", "Best", "Muscles"):
+        table.add_column(col, justify="left" if col in left else "right")
+    guessed = 0
     for r in summary.itertuples():
         if r.kind == TIMED:
             best = f"{r.max_seconds:g} s"
@@ -923,10 +938,13 @@ def exercises(
             best = "—" if math.isnan(r.e1rm) else f"e1RM {r.e1rm:,.0f}"
         rest = "" if pd.isna(r.avg_rest) else format_duration_seconds(round(r.avg_rest))
         days = (now - pd.Timestamp(r.last).normalize()).days
+        guessed += catalog.is_guessed(r.exercise)
         table.add_row(r.exercise, "" if r.kind == "loaded" else r.kind, str(r.sessions), str(r.sets),
-                      _date(r.first), _date(r.last), str(days), rest, best)
+                      _date(r.first), _date(r.last), str(days), rest, best, muscles_label(catalog, r.exercise))
     console.print(table)
-    console.print(f"[dim]{_plural(len(summary), 'exercise')}. Sets exclude warm-ups.[/dim]")
+    console.print(f"[dim]{_plural(len(summary), 'exercise')}. Sets exclude warm-ups. Muscles are primary only.[/dim]")
+    if guessed:
+        console.print(f"[dim]{_plural(guessed, 'exercise')} with guessed muscles (marked ?): fitness exercises --unmapped[/dim]")
     merged = {} if raw else state.store.active_merges()
     shown = set(summary["exercise"])
     for m in sorted(merged.values(), key=lambda m: m.into):
@@ -1435,6 +1453,9 @@ def config_set(ctx: typer.Context, key: str, value: str):
         else:
             console.print("No automatic corrections changed.")
 
+
+# Commands defined in other modules add themselves to `app` on import.
+from . import cli_metadata  # noqa: E402,F401
 
 if __name__ == "__main__":
     app()
