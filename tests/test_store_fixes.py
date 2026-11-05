@@ -104,3 +104,14 @@ def test_schema_1_database_is_upgraded(tmp_path):
         assert s.dismissed_flag_keys() == set()
         assert s.separate_pairs() == set()
         assert s.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == str(SCHEMA_VERSION)
+
+
+def test_undismiss_flags(store, tmp_path):
+    do_import(store, write_export(tmp_path / "e.csv", *HISTORY, BAD))
+    keys = [f.key for f in store.open_flags()]
+    store.dismiss_flags(keys)
+    assert [f.key for f in store.dismissed_flags()] == keys and store.open_flags() == []
+    assert store.undismiss_flags(keys[:1]) == 1
+    assert [f.key for f in store.open_flags()] == keys[:1]
+    assert store.undismiss_flags() == 1
+    assert len(store.open_flags()) == 2 and store.dismissed_flags() == []

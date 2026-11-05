@@ -678,6 +678,21 @@ class Store:
                 [(k, now) for k in keys],
             )
 
+    def dismissed_flags(self, catalog: Catalog | None = None) -> list[outliers.Flag]:
+        """Flags you dismissed that the rules would still raise today (for listing or undoing)."""
+        workouts = self.load_workouts()
+        dismissed = self.dismissed_flag_keys()
+        return [f for f in outliers.detect(workouts, catalog or Catalog.build(workouts)) if f.key in dismissed]
+
+    def undismiss_flags(self, keys: Iterable[str] | None = None) -> int:
+        """Forget dismissals so those flags are raised again. ``None`` forgets all of them."""
+        with self._writing():
+            if keys is None:
+                cur = self.conn.execute("DELETE FROM dismissed_flags")
+            else:
+                cur = self.conn.executemany("DELETE FROM dismissed_flags WHERE flag_key = ?", [(k,) for k in keys])
+        return cur.rowcount
+
     def corrections_for_workouts(self, keys: Iterable[str]) -> list[Correction]:
         keys = set(keys)
         return [c for c in self.corrections() if c.workout in keys]
