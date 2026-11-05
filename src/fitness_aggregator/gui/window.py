@@ -783,11 +783,11 @@ class ReviewTab(Tab):
         self.kept_combo.setCurrentText(detail.kept)
         self.kept_combo.blockSignals(False)
         texts = []
-        for name, s in detail.suggestions.items():
+        for s in detail.suggestions.values():
             texts.append(s.relation)
             if s.kept_sets and s.adjusted_sets and detail.offset_allowed:
-                texts.append(f"<span style='color:{MUTED}'>Compared top sets: {detail.kept} "
-                             f"{describe_sets(s.kept_sets)} vs {name} {describe_sets(s.adjusted_sets)}.</span>")
+                compared = "<br>".join(f"&nbsp;&nbsp;{html.escape(line)}" for line in s.compared)
+                texts.append(f"<span style='color:{MUTED}'>Compared top sets:<br>{compared}</span>")
                 texts.append(s.summary)
         self.suggestion_label.setText("<br>".join(texts))
         self.offset_button.setEnabled(detail.offset_allowed)

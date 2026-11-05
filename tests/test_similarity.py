@@ -74,12 +74,46 @@ def test_suggest_offset_when_switching_back_is_positive():
     assert s.offset == 40 and "lighter" in s.summary
 
 
-def test_suggest_offset_with_overlap_uses_closest_sessions():
+def test_overlap_interpolates_between_the_kept_sessions_either_side():
     kept = [ts(0, 100, 10), ts(10, 100, 10), ts(40, 200, 10)]
     other = [ts(11, 80, 10), ts(30, 80, 10)]
     s = suggest_offset("A", kept, "B", other)
-    assert "You used both between 2026-06-12 and 2026-07-01" in s.relation
-    assert [(k.weight, a.weight) for k, a in zip(s.kept_sets, s.adjusted_sets, strict=True)] == [(100, 80), (200, 80)]
+    assert s.relation.startswith("You used B twice (2026-06-12, 2026-07-01), during the period you were using A "
+                                 "(2026-06-01 → 2026-07-11).")
+    assert "just before and after it" in s.relation
+    # Each B session sits between A's 2026-06-11 (100×10) and 2026-07-11 (200×10) sessions.
+    assert [[k.weight for k in c.kept] for c in s.comparisons] == [[100, 200], [100, 200]]
+    # A's interpolated weight at 10 reps: 103.3 lb on 06-12 and 166.7 lb on 07-01 → mean diff vs 80 lb = 55.
+    assert s.offset == 55
+    assert s.compared[0] == ("B 2026-06-12 80 lb × 10 vs A 2026-06-11 100 lb × 10 and 2026-07-11 200 lb × 10 "
+                             "(≈ 103 lb × 10 on 2026-06-12)")
+
+
+def test_overlap_prefers_a_same_day_session_then_the_nearest():
+    kept = [ts(0, 100, 10), ts(5, 110, 10)]
+    other = [ts(5, 90, 10), ts(9, 95, 10)]
+    s = suggest_offset("A", kept, "B", other)
+    assert [[k.weight for k in c.kept] for c in s.comparisons] == [[110], [110]]
+    assert "Comparing with the closest A sessions." in s.relation
+
+
+def test_real_leg_extension_one_off_machine_is_compared_with_both_neighbours():
+    if not REAL_EXPORT.exists():
+        pytest.skip("real export not present")
+    ws = parse_strong_csv(REAL_EXPORT).workouts
+    a, b = "Leg Extension (Machine)", "Leg Extension (Machine 2)"
+    s = suggest_offset(a, top_sets(ws, a), b, top_sets(ws, b))
+    assert s.relation.startswith(f"You used {b} once (2026-08-22), during the period you were using {a}")
+    assert s.compared == [f"{b} 2026-08-22 240 lb × 10 vs {a} 2026-08-12 170 lb × 12 and 2026-08-28 240 lb × 8 "
+                          "(≈ 209 lb × 10 on 2026-08-22)"]
+    assert (s.offset, s.factor) == (-30, 0.87)
+
+
+def test_switch_comparison_lines_are_dated():
+    kept = [ts(0, 140, 14), ts(5, 145, 14)]
+    other = [ts(20, 205, 12)]
+    assert suggest_offset("A", kept, "B", other).compared == [
+        "A: 2026-06-01 140 lb × 14, 2026-06-06 145 lb × 14", "B: 2026-06-21 205 lb × 12"]
 
 
 def test_assisted_and_timed_suggestions():

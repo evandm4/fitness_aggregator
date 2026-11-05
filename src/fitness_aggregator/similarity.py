@@ -149,6 +149,44 @@ def round_to(x: float, step: float = 5) -> float:
     return math.copysign(step * math.floor(q + 0.5), x) + 0.0
 
 
+@dataclass(frozen=True)
+class Comparison:
+    """One session of the exercise being adjusted, and the kept-exercise session(s) it's compared with.
+
+    ``kept`` holds one session (the same day, or the nearest one) or two (the
+    sessions just before and after, whose e1RM is interpolated to this date).
+    """
+
+    adjusted: TopSet
+    kept: tuple[TopSet, ...]
+
+    def kept_e1rm(self) -> float:
+        """The kept exercise's estimated e1RM on the adjusted session's date."""
+        if len(self.kept) == 1:
+            return _e1rm(self.kept[0])
+        before, after = self.kept
+        span = (after.when - before.when).total_seconds()
+        frac = (self.adjusted.when - before.when).total_seconds() / span if span else 0.0
+        return _e1rm(before) + (_e1rm(after) - _e1rm(before)) * frac
+
+    def kept_weight(self) -> float:
+        """The kept exercise's weight on that date (interpolated the same way), for assisted lifts."""
+        if len(self.kept) == 1:
+            return self.kept[0].weight
+        before, after = self.kept
+        span = (after.when - before.when).total_seconds()
+        frac = (self.adjusted.when - before.when).total_seconds() / span if span else 0.0
+        return before.weight + (after.weight - before.weight) * frac
+
+
+def _e1rm(t: TopSet) -> float:
+    return t.weight * (1 + t.reps / 30)
+
+
+def _dated(t: TopSet) -> str:
+    return f"{t.when:%Y-%m-%d} {describe_sets([t])}"
+
+
 @dataclass
 class Suggestion:
     """How to adjust ``adjusted`` so its weights line up with ``kept``."""
@@ -160,6 +198,26 @@ class Suggestion:
     adjusted_sets: list[TopSet] = field(default_factory=list)
     offset: float | None = None   # lb to add to every adjusted set
     factor: float | None = None   # or multiply by this
+    comparisons: list[Comparison] = field(default_factory=list)  # set when the two overlapped in time
+
+    @property
+    def compared(self) -> list[str]:
+        """The exact sessions the suggestion is based on, with dates, one line each."""
+        if not self.kept_sets or not self.adjusted_sets:
+            return []
+        if not self.comparisons:  # a clean switch: the sessions either side of it
+            return [f"{self.kept}: {', '.join(_dated(t) for t in self.kept_sets)}",
+                    f"{self.adjusted}: {', '.join(_dated(t) for t in self.adjusted_sets)}"]
+        lines = []
+        for c in self.comparisons:
+            if len(c.kept) == 2:
+                estimate = c.kept_e1rm() / (1 + c.adjusted.reps / 30)
+                ref = (f"{self.kept} {_dated(c.kept[0])} and {_dated(c.kept[1])} "
+                       f"(≈ {estimate:.0f} lb × {c.adjusted.reps:g} on {c.adjusted.when:%Y-%m-%d})")
+            else:
+                ref = f"{self.kept} {_dated(c.kept[0])}"
+            lines.append(f"{self.adjusted} {_dated(c.adjusted)} vs {ref}")
+        return lines
 
     @property
     def summary(self) -> str:
@@ -173,27 +231,68 @@ class Suggestion:
                 f"Suggested: {self.offset:+g} lb on {self.adjusted}{factor}.")
 
 
+def _times(n: int) -> str:
+    return {1: "once", 2: "twice"}.get(n, f"{n} times")
+
+
+def _dates(sets: list[TopSet]) -> str:
+    if len(sets) <= 3:
+        return ", ".join(f"{t.when:%Y-%m-%d}" for t in sets)
+    return f"{sets[0].when:%Y-%m-%d} … {sets[-1].when:%Y-%m-%d}"
+
+
+def _compare_overlapping(kept: list[TopSet], adjusted: list[TopSet]) -> list[Comparison]:
+    """Pair each adjusted session with kept sessions: the same day, else the ones either side, else the nearest."""
+    out = []
+    for a in adjusted:
+        same_day = [k for k in kept if k.when.date() == a.when.date()]
+        before = [k for k in kept if k.when < a.when and k.when.date() != a.when.date()]
+        after = [k for k in kept if k.when > a.when and k.when.date() != a.when.date()]
+        if same_day:
+            refs = (min(same_day, key=lambda k: abs((k.when - a.when).total_seconds())),)
+        elif before and after:
+            refs = (before[-1], after[0])
+        else:
+            refs = (min(kept, key=lambda k: abs((k.when - a.when).total_seconds())),)
+        out.append(Comparison(a, refs))
+    # Keep the adjusted sessions with the closest kept reference.
+    def gap(c: Comparison) -> float:
+        return min(abs((k.when - c.adjusted.when).total_seconds()) for k in c.kept)
+
+    chosen = sorted(out, key=gap)[:SESSIONS_COMPARED]
+    return sorted(chosen, key=lambda c: c.adjusted.when)
+
+
 def _select(kept_name: str, kept: list[TopSet], adjusted_name: str, adjusted: list[TopSet]):
     """Pick the sessions to compare and describe how the two exercises were used over time."""
     n = SESSIONS_COMPARED
     k_start, k_end = kept[0].when, kept[-1].when
     a_start, a_end = adjusted[0].when, adjusted[-1].when
     if k_end < a_start:
-        return (kept[-n:], adjusted[:n],
+        return (kept[-n:], adjusted[:n], [],
                 f"You switched from {kept_name} to {adjusted_name} on {a_start:%Y-%m-%d} (no overlap).")
     if a_end < k_start:
-        return (kept[:n], adjusted[-n:],
+        return (kept[:n], adjusted[-n:], [],
                 f"You switched from {adjusted_name} to {kept_name} on {k_start:%Y-%m-%d} (no overlap).")
-    # Used during the same period: pair each adjusted session with the nearest kept one.
-    def nearest(a: TopSet) -> TopSet:
-        return min(kept, key=lambda k: abs((k.when - a.when).total_seconds()))
 
-    pairs = sorted(((abs((nearest(a).when - a.when).total_seconds()), nearest(a), a) for a in adjusted),
-                   key=lambda p: p[0])[:n]
-    lo, hi = max(k_start, a_start), min(k_end, a_end)
-    period = f"on {lo:%Y-%m-%d}" if lo.date() == hi.date() else f"between {lo:%Y-%m-%d} and {hi:%Y-%m-%d}"
-    return ([p[1] for p in pairs], [p[2] for p in pairs],
-            f"You used both {period}; comparing the closest sessions.")
+    comparisons = _compare_overlapping(kept, adjusted)
+    if k_start < a_start and a_end < k_end:
+        relation = (f"You used {adjusted_name} {_times(len(adjusted))} ({_dates(adjusted)}), during the period "
+                    f"you were using {kept_name} ({k_start:%Y-%m-%d} → {k_end:%Y-%m-%d}).")
+    elif a_start < k_start and k_end < a_end:
+        relation = (f"You used {kept_name} {_times(len(kept))} ({_dates(kept)}), during the period "
+                    f"you were using {adjusted_name} ({a_start:%Y-%m-%d} → {a_end:%Y-%m-%d}).")
+    else:
+        lo, hi = max(k_start, a_start), min(k_end, a_end)
+        period = f"on {lo:%Y-%m-%d}" if lo.date() == hi.date() else f"between {lo:%Y-%m-%d} and {hi:%Y-%m-%d}"
+        relation = f"You used both {period}."
+    if any(len(c.kept) == 2 for c in comparisons):
+        relation += (f" Each {adjusted_name} session is compared with the {kept_name} sessions just before "
+                     "and after it, allowing for progress in between.")
+    else:
+        relation += f" Comparing with the closest {kept_name} sessions."
+    kept_used = sorted({k for c in comparisons for k in c.kept}, key=lambda t: t.when)
+    return kept_used, [c.adjusted for c in comparisons], comparisons, relation
 
 
 def suggest_offset(kept_name: str, kept: list[TopSet], adjusted_name: str, adjusted: list[TopSet],
@@ -201,8 +300,8 @@ def suggest_offset(kept_name: str, kept: list[TopSet], adjusted_name: str, adjus
     """Suggest an offset (and factor) that puts ``adjusted`` on ``kept``'s scale."""
     if not kept or not adjusted:
         return Suggestion(kept_name, adjusted_name, "One of them has no working sets to compare.")
-    k_sel, a_sel, relation = _select(kept_name, kept, adjusted_name, adjusted)
-    s = Suggestion(kept_name, adjusted_name, relation, k_sel, a_sel)
+    k_sel, a_sel, comparisons, relation = _select(kept_name, kept, adjusted_name, adjusted)
+    s = Suggestion(kept_name, adjusted_name, relation, k_sel, a_sel, comparisons=comparisons)
 
     if kind == LOADED:
         a_weight = statistics.mean(t.weight for t in a_sel)
@@ -210,12 +309,21 @@ def suggest_offset(kept_name: str, kept: list[TopSet], adjusted_name: str, adjus
         # unweighted kept side suggested an offset that zeroes every adjusted set, and factor 0.
         if a_weight <= 0 or statistics.mean(t.weight for t in k_sel) <= 0:
             return s
-        a_reps = statistics.mean(t.reps for t in a_sel)
-        k_e1rm = statistics.mean(t.weight * (1 + t.reps / 30) for t in k_sel)
-        k_at_a_reps = k_e1rm / (1 + a_reps / 30)  # kept's weight at the adjusted side's rep count
-        s.offset = round_to(k_at_a_reps - a_weight)
-        s.factor = round(k_at_a_reps / a_weight, 2)
+        if comparisons:
+            # Kept exercise's weight at each adjusted session's rep count, estimated for that date.
+            k_at = [c.kept_e1rm() / (1 + c.adjusted.reps / 30) for c in comparisons]
+            s.offset = round_to(statistics.mean(k - c.adjusted.weight for k, c in zip(k_at, comparisons, strict=True)))
+            s.factor = round(statistics.mean(k_at) / a_weight, 2)
+        else:
+            a_reps = statistics.mean(t.reps for t in a_sel)
+            k_e1rm = statistics.mean(_e1rm(t) for t in k_sel)
+            k_at_a_reps = k_e1rm / (1 + a_reps / 30)  # kept's weight at the adjusted side's rep count
+            s.offset = round_to(k_at_a_reps - a_weight)
+            s.factor = round(k_at_a_reps / a_weight, 2)
     elif kind == ASSISTED:
         # Weight is assistance; compare it directly (a rep conversion makes no sense here).
-        s.offset = round_to(statistics.mean(t.weight for t in k_sel) - statistics.mean(t.weight for t in a_sel))
+        if comparisons:
+            s.offset = round_to(statistics.mean(c.kept_weight() - c.adjusted.weight for c in comparisons))
+        else:
+            s.offset = round_to(statistics.mean(t.weight for t in k_sel) - statistics.mean(t.weight for t in a_sel))
     return s

@@ -36,8 +36,10 @@ def run(tmp_path, monkeypatch):
 def test_review_list(run):
     r = run("merge", "review", "--list")
     assert "3 groups of similar exercises." in r.output
-    assert "[1]  Hip Abductor (Machine)" in r.output and "3 sessions" in r.output
-    assert "[1]  Plank    1 session" in r.output and "last top set 60 s" in r.output
+    assert "[1] Hip Abductor (Machine)  3 sessions, 2026-08-04 → 2026-08-12, last top set 160 lb × 14 on 2026-08-12" \
+        in r.output
+    assert "[1] Plank  1 session on 2026-09-01, top set 60 s" in r.output
+    assert "Compared top sets:" in r.output and "Hip Abductor (Machine): 2026-08-04 145 lb × 14" in r.output
     assert f"You switched from {A} to {B} on 2026-08-22 (no overlap)." in r.output
     assert "Suggested: -50 lb on Hip Abductor 2 (Machine) (or ×0.75)." in r.output
 

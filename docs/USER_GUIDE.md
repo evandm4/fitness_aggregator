@@ -58,7 +58,7 @@ Corrections changed by this import:
   + #3 Merged 2026-06-02 14:06 workout into 2026-06-02 14:00 workout: started 3 min after it ended (threshold 60 min)
 Corrections applied: 2 durations excluded, 1 workout merged. See fitness corrections.
 3 sets flagged as possible data-entry errors. Review with fitness check.
-8 groups of similar exercises to review (combine or keep separate): fitness merge review.
+11 groups of similar exercises to review (combine or keep separate): fitness merge review.
 ```
 
 What each part means:
@@ -125,18 +125,22 @@ The real example from this export: you switched gyms in August, and the second g
 
 ```console
 $ fitness merge review
-(2/8) Likely the same exercise (names match apart from numbering or plurals)
-  [1]  Hip Abductor (Machine)    12 sessions  2026-06-02 → 2026-08-12  last top set 160 lb × 14
-  [2]  Hip Abductor 2 (Machine)  9 sessions   2026-08-22 → 2026-11-01  last top set 205 lb × 10
+(2/11) Likely the same exercise (names match apart from numbering or plurals)
+  [1] Hip Abductor (Machine)  12 sessions, 2026-06-02 → 2026-08-12, last top set 160 lb × 14 on 2026-08-12
+  [2] Hip Abductor 2 (Machine)  9 sessions, 2026-08-22 → 2026-11-01, last top set 205 lb × 10 on 2026-11-01
   You switched from Hip Abductor (Machine) to Hip Abductor 2 (Machine) on 2026-08-22 (no overlap).
-  Compared top sets: Hip Abductor (Machine) 145–160 lb × 14 vs Hip Abductor 2 (Machine) 205 lb × 12–14.
+  Compared top sets:
+    Hip Abductor (Machine): 2026-08-04 145 lb × 14, 2026-08-08 150 lb × 14, 2026-08-12 160 lb × 14
+    Hip Abductor 2 (Machine): 2026-08-22 205 lb × 12, 2026-08-25 205 lb × 14, 2026-08-28 205 lb × 14
   Hip Abductor 2 (Machine) top sets were about 50 lb heavier at similar reps. Suggested: -50 lb on Hip Abductor 2 (Machine) (or ×0.75).
   [c] combine as-is  [o] combine with weight offset  [k] keep separate  [p] preview combined  [s] skip  [q] quit
 >
 ```
 
 - **`c` combine as-is**: count both names as one exercise. You pick which name to keep.
-- **`o` combine with offset**: same, but adjust the other name's weights by a fixed amount (`-50`) or a factor (`x0.75`). The suggestion compares the sessions on either side of the switch, evening out rep differences, so your real progress isn't mistaken for a machine difference. It's a starting point: accept it or type your own.
+- **`o` combine with offset**: same, but adjust the other name's weights by a fixed amount (`-50`) or a factor (`x0.75`). It's a starting point: accept it or type your own. How it's worked out (the dated sets it used are always listed under "Compared top sets"):
+  - **You switched machines** (no overlap, like Hip Abductor): your last 3 sessions on one are compared with your first 3 on the other, evening out rep differences.
+  - **You used the other machine now and then** (like Leg Extension (Machine 2), used once on 2026-08-22 while you were using Leg Extension (Machine) before and after): each of those sessions is compared with your kept-machine sessions just before and after it, interpolating your e1RM to that date. Here that's 170 lb × 12 on 2026-08-12 and 240 lb × 8 on 2026-08-28, which put you at about 209 lb × 10 on 2026-08-22, against the 240 lb × 10 you did on Machine 2: suggested −30 lb. A session on the same day as the other machine is compared directly.
 - **`k` keep separate**: they're different exercises. You won't be asked again.
 - **`p` preview**: saves a chart of the sessions around the switch, as recorded and as adjusted (see `docs/images/plot_merge_preview.png`).
 - **`s` skip** leaves it for later.

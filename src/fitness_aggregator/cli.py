@@ -13,6 +13,7 @@ import pandas as pd
 import typer
 from rich.console import Console
 from rich.markup import escape
+from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
 from typer.core import TyperGroup
@@ -1261,17 +1262,20 @@ def _offset_allowed(kind: str) -> bool:
 
 def _print_candidate(console: Console, store: Store, catalog, group, members, i: int, n: int) -> None:
     console.print(f"[bold]({i}/{n}) {TIER_TEXT[group.tier]}[/bold]")
-    table = Table(box=None, show_header=False, pad_edge=False, padding=(0, 2, 0, 0))
-    for _ in range(5):
-        table.add_column()
+    table = Table(box=None, show_header=False, pad_edge=False, padding=(0, 1, 0, 0))
+    table.add_column(no_wrap=True)
+    table.add_column()
     for j, m in enumerate(members, start=1):
-        if m.sets:
-            span = f"{m.sets[0].when:%Y-%m-%d} → {m.sets[-1].when:%Y-%m-%d}"
-            last = f"last top set {similarity.describe_sets(m.sets[-1:])}"
+        if len(m.sets) == 1:
+            only = m.sets[0]
+            details = f"1 session on {only.when:%Y-%m-%d}, top set {similarity.describe_sets([only])}"
+        elif m.sets:
+            last = m.sets[-1]
+            details = (f"{_plural(m.sessions, 'session')}, {m.sets[0].when:%Y-%m-%d} → {last.when:%Y-%m-%d}, "
+                       f"last top set {similarity.describe_sets([last])} on {last.when:%Y-%m-%d}")
         else:
-            span, last = "", "no working sets"
-        table.add_row(escape(f"  [{j}]"), esc(m.name), _plural(m.sessions, "session"), span,
-                      f"[dim]{esc(last)}[/dim]")
+            details = "no working sets"
+        table.add_row(escape(f"  [{j}]"), f"[bold]{esc(m.name)}[/bold]  [dim]{esc(details)}[/dim]")
     console.print(table)
     kept = members[_default_kept(members)]
     kind = catalog.kind(kept.name)
@@ -1279,11 +1283,12 @@ def _print_candidate(console: Console, store: Store, catalog, group, members, i:
         if m is kept:
             continue
         s = similarity.suggest_offset(kept.name, kept.sets, m.name, m.sets, kind)
-        console.print(f"  {esc(s.relation)}")
+        console.print(Padding(esc(s.relation), (0, 0, 0, 2)))
         if s.kept_sets and s.adjusted_sets and _offset_allowed(kind):
-            console.print(f"  [dim]Compared top sets: {esc(kept.name)} {similarity.describe_sets(s.kept_sets)} vs "
-                          f"{esc(m.name)} {similarity.describe_sets(s.adjusted_sets)}.[/dim]")
-            console.print(f"  {esc(s.summary)}")
+            console.print(Padding("[dim]Compared top sets:[/dim]", (0, 0, 0, 2)))
+            for line in s.compared:
+                console.print(Padding(f"[dim]{esc(line)}[/dim]", (0, 0, 0, 4)))
+            console.print(Padding(esc(s.summary), (0, 0, 0, 2)))
 
 
 def _print_preview(console: Console, kept: Member, others: list[tuple[Member, float | None, float | None]]) -> None:
