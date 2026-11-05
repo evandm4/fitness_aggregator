@@ -72,3 +72,9 @@ def test_apply_renames_and_adjusts_keeping_originals():
 def test_inactive_merges_ignored():
     c = stored(plan_merge("B", "A"), status=corr.REVERTED)
     assert active_merges([c]) == {}
+
+
+def test_adjust_offset_has_no_float_noise():
+    # 1.1 + 2.2 is 3.3000000000000003 in floating point; it showed up in exports and broke equality.
+    assert Merge("a", "b", 2.2, None).adjust(1.1) == 3.3
+    assert Merge("a", "b", -0.1, None).adjust(0.3) == 0.2
