@@ -16,30 +16,34 @@ pytest.importorskip("PySide6")
 pytest.importorskip("matplotlib")
 
 from helpers import REAL_EXPORT, workout_rows, write_export
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QApplication
 from typer.testing import CliRunner
 
+from fitness_aggregator import __version__
 from fitness_aggregator import corrections as corr
 from fitness_aggregator.cli import app as cli_app
 from fitness_aggregator.gui import app as gui_app
 from fitness_aggregator.gui import charts
 from fitness_aggregator.gui.controller import Controller, parse_adjustment
-from fitness_aggregator.gui.window import Dialogs, MainWindow
+from fitness_aggregator.gui.window import HIGH_BG, LOW_BG, Dialogs, MainWindow
 from fitness_aggregator.importers import parse_strong_csv
 from fitness_aggregator.settings import Settings
 from fitness_aggregator.store import Store
 
 TODAY = datetime(2026, 11, 5)
+HEALTH_EXPORT = Path(__file__).parent / "fixtures" / "apple_health_export.xml"
 needs_export = pytest.mark.skipif(not REAL_EXPORT.exists(), reason="real export not present")
 
 
 class ScriptedDialogs(Dialogs):
     """Records messages and answers questions without showing anything."""
 
-    def __init__(self, confirm=True, edit=None, open_path=None):
+    def __init__(self, confirm=True, edit=None, open_path=None, health_path=None, save_path=None):
         super().__init__(None)
-        self.infos, self.errors, self.questions = [], [], []
+        self.infos, self.errors, self.questions, self.abouts, self.save_names = [], [], [], [], []
         self.answer, self.edit, self.open_path = confirm, edit, open_path
+        self.health_path, self.save_path = health_path, save_path
 
     def info(self, title, text):
         self.infos.append(text)
@@ -56,6 +60,16 @@ class ScriptedDialogs(Dialogs):
 
     def edit_set(self, title, weight, reps):
         return self.edit
+
+    def open_health_file(self):
+        return self.health_path
+
+    def save_file(self, title, name):
+        self.save_names.append(name)
+        return self.save_path
+
+    def about(self, title, text):
+        self.abouts.append(text)
 
 
 @pytest.fixture(scope="session")
@@ -84,10 +98,11 @@ def db(imported_db, tmp_path):
 def make_window(qapp, db):
     windows = []
 
-    def make(dialogs=None):
-        w = MainWindow(Controller(Store(db), Settings(), today=TODAY), dialogs or ScriptedDialogs(),
-                       background=False)
-        w.resize(1280, 800)
+    def make(dialogs=None, **kwargs):
+        kwargs.setdefault("background", False)
+        w = MainWindow(Controller(Store(db), Settings(), today=TODAY), dialogs or ScriptedDialogs(), **kwargs)
+        if kwargs.get("settings") is None:
+            w.resize(1280, 800)
         windows.append(w)
         return w
 
@@ -285,6 +300,246 @@ def test_bad_file_shows_an_error(qapp, tmp_path):
     w.close()
 
 
+# --- charts ------------------------------------------------------------------------------------
+
+@needs_export
+def test_every_chart_draws_in_the_charts_tab(make_window):
+    w = make_window()
+    w.exercises.select_exercise("Leg Extension (Machine)")
+    w.tabs.setCurrentWidget(w.charts)
+    assert w.charts.exercise == "Leg Extension (Machine)"  # follows the Exercises tab
+    titles = {}
+    for spec in charts.CHARTS:
+        w.charts.set_chart(spec.key)
+        fig = w.charts.chart.figure
+        assert fig is not None and fig.axes, spec.key
+        titles[spec.key] = fig.get_suptitle()
+        assert w.charts.exercise_combo.isEnabled() == spec.needs_exercise
+    assert titles["progress"] == "Estimated 1RM: Leg Extension (Machine)"
+    assert titles["rep-prs"] == "Rep maxes: Leg Extension (Machine)"
+    assert titles["volume-month"] == "Monthly training volume"
+    assert titles["dashboard"].startswith("Training dashboard")
+    assert w.charts.chart.image is not None  # the dashboard is scaled, not squashed
+    w.charts.set_chart("progress", "Leg Press")
+    assert w.charts.chart.figure.get_suptitle() == "Estimated 1RM: Leg Press"
+
+
+@needs_export
+def test_charts_are_drawn_only_when_their_tab_is_shown(make_window):
+    w = make_window()
+    assert w.charts.chart.figure is None and w.muscles.chart.figure is None
+    w.tabs.setCurrentWidget(w.muscles)
+    assert w.muscles.chart.figure.get_suptitle() == "Sets per muscle per week"
+    w.refresh()
+    assert w.muscles.dirty is False and w.charts.dirty is True  # only the visible tab redraws
+
+
+@needs_export
+@pytest.mark.parametrize("suffix", [".png", ".svg", ".pdf"])
+def test_save_chart_as(make_window, tmp_path, suffix):
+    out = tmp_path / f"chart{suffix}"
+    dialogs = ScriptedDialogs(save_path=str(out))
+    w = make_window(dialogs)
+    w.exercises.select_exercise("Leg Press")
+    w.tabs.setCurrentWidget(w.charts)
+    w.charts.set_chart("progress")
+    assert w.charts.save() == out
+    assert out.stat().st_size > 1000
+    assert dialogs.save_names == ["progress_leg-press_2026-11-05.png"]
+    assert str(out) in w.statusBar().currentMessage()
+
+
+@needs_export
+def test_save_chart_rejects_other_formats(make_window, tmp_path):
+    dialogs = ScriptedDialogs(save_path=str(tmp_path / "chart.jpg"))
+    w = make_window(dialogs)
+    assert w.save_chart() is None
+    assert w.tabs.currentWidget() is w.charts
+    assert ".png" in dialogs.errors[-1] and not (tmp_path / "chart.jpg").exists()
+    assert w.charts.save(str(tmp_path / "noext")) == tmp_path / "noext.png"
+
+
+# --- muscles ---------------------------------------------------------------------------------
+
+@needs_export
+def test_muscles_table_colours_low_and_high_weeks(make_window):
+    w = make_window()
+    model = w.muscles.model
+    assert model.rowCount() > 10
+    assert model.headerData(0, Qt.Horizontal) == "Muscle"
+    assert model.headerData(model.columnCount() - 1, Qt.Horizontal) == "Avg"
+    assert len(w.muscles.periods) == 16
+    seen = set()
+    for r in range(model.rowCount()):
+        row = model.row(r)
+        for c, p in enumerate(w.muscles.periods, start=1):
+            colour = model.data(model.index(r, c), Qt.BackgroundRole)
+            status = row[("status", p)]
+            if status == "low":
+                assert 0 < row[p] < 10 and colour.name() == LOW_BG
+            elif status == "high":
+                assert row[p] > 20 and colour.name() == HIGH_BG
+            else:
+                assert colour is None
+            seen.add(status)
+    assert {"low", "high", "ok", "zero"} <= seen
+    chest = next(model.row(r) for r in range(model.rowCount()) if model.row(r)["muscle"] == "chest")
+    assert chest["avg"] == pytest.approx(sum(chest[p] for p in w.muscles.periods) / 16)
+
+
+def test_muscle_table_leaves_the_current_week_uncoloured(qapp, tmp_path):
+    bench = (("Bench Press (Barbell)", ((135, 8),) * 12),)
+    export = write_export(tmp_path / "e.csv", workout_rows("2026-10-27 10:00:00"),
+                          workout_rows("2026-11-02 10:00:00", exercises=bench),
+                          workout_rows("2026-11-04 10:00:00", exercises=bench))
+    with Store(tmp_path / "m.db") as store:
+        store.apply_import(store.plan_import(parse_strong_csv(export), export), Settings())
+    ctl = Controller(Store(tmp_path / "m.db"), Settings(), today=TODAY)
+    periods, table = ctl.muscle_table()
+    chest = next(r for r in table if r["muscle"] == "chest")
+    assert chest[periods[-1]] == 24 and chest[("status", periods[-1])] == "partial"
+    assert chest[("status", periods[0])] == "low"
+    assert chest["avg"] == 2  # only complete weeks are averaged
+    ctl.close()
+
+
+# --- bodyweight ------------------------------------------------------------------------------
+
+def _health_xml(path: Path, *readings: tuple[str, float]) -> Path:
+    records = "".join(
+        f'<Record type="HKQuantityTypeIdentifierBodyMass" sourceName="Scale" unit="lb" '
+        f'startDate="{day} 07:00:00 -0700" endDate="{day} 07:00:00 -0700" value="{lb}"/>' for day, lb in readings)
+    path.write_text(f'<?xml version="1.0"?><HealthData locale="en_US">{records}</HealthData>')
+    return path
+
+
+@needs_export
+def test_import_apple_health_then_drop_days(make_window, tmp_path):
+    dialogs = ScriptedDialogs(health_path=str(HEALTH_EXPORT))
+    w = make_window(dialogs)
+    assert "placeholder" in w.bodyweight.summary.text() and w.bodyweight.model.rowCount() == 0
+
+    def pull_up():
+        return next(r for r in w.controller.bests_rows() if r["exercise"] == "Pull Up (Assisted)")["e1rm_v"]
+
+    before = pull_up()
+    message = w.import_health()
+    assert message.startswith("Imported. 3 days of bodyweight stored")
+    assert "First Health import: 3 days" in dialogs.questions[-1]
+    assert w.bodyweight.model.rowCount() == 3
+    assert w.bodyweight.model.row(0)["lb"] == 173.5  # newest first
+    assert "3 days" in w.bodyweight.summary.text()
+    assert pull_up() != before  # assisted loads now use the entries, as in the CLI
+    assert "No changes" in w.import_health()
+
+    smaller = _health_xml(tmp_path / "export.xml", ("2026-09-10", 174))
+    dialogs.answer = False
+    assert w.import_health(str(smaller)) is None
+    assert "Drop 2 day(s) of bodyweight" in dialogs.questions[-1]
+    assert w.bodyweight.model.rowCount() == 3
+    dialogs.answer = True
+    assert w.import_health(str(smaller)).startswith("Imported. 1 days")
+    assert w.bodyweight.model.rowCount() == 1
+
+
+def test_bad_health_export_shows_an_error(qapp, tmp_path):
+    dialogs = ScriptedDialogs()
+    w = MainWindow(Controller(Store(tmp_path / "e.db"), Settings(), today=TODAY), dialogs, background=False)
+    (tmp_path / "bad.xml").write_text("<nope")
+    assert w.import_health(str(tmp_path / "bad.xml")) is None
+    assert w.import_health(str(_health_xml(tmp_path / "empty.xml"))) is None
+    assert len(dialogs.errors) == 2 and "no usable bodyweight" in dialogs.errors[-1]
+    w.close()
+
+
+# --- first run, shortcuts, settings, about ------------------------------------------------------
+
+def test_empty_database_shows_the_welcome_screen(qapp, tmp_path):
+    export = write_export(tmp_path / "e.csv", workout_rows("2026-10-27 10:00:00"))
+    dialogs = ScriptedDialogs(open_path=str(export))
+    w = MainWindow(Controller(Store(tmp_path / "e.db"), Settings(), today=TODAY), dialogs, background=False)
+    assert w.stack.currentWidget() is w.welcome
+    assert "e.db" in w.welcome.db_label.text()
+    w.find_exercise()  # nothing to search yet
+    assert w.stack.currentWidget() is w.welcome
+    w.welcome.import_button.click()
+    assert dialogs.infos[-1].startswith("Imported. 1 workouts")
+    assert w.stack.currentWidget() is w.tabs
+    assert w.workouts.model.rowCount() == 1
+    w.close()
+
+
+@needs_export
+def test_keyboard_shortcuts(make_window):
+    w = make_window()
+    keys = {name: [k.toString() for k in a.shortcuts()] for name, a in w.actions.items()}
+    assert "Ctrl+I" in keys["import"] and keys["refresh"] == ["F5"] and keys["find"] == ["Ctrl+F"]
+    w.actions["find"].trigger()
+    assert w.tabs.currentWidget() is w.exercises
+    w.actions["refresh"].trigger()
+    assert w.exercises.model.rowCount() == 103
+
+
+@needs_export
+def test_about_box(make_window, db):
+    dialogs = ScriptedDialogs()
+    w = make_window(dialogs)
+    w.actions["about"].trigger()
+    assert __version__ in dialogs.abouts[-1] and str(db) in dialogs.abouts[-1]
+    assert "103 sessions" in dialogs.abouts[-1]
+
+
+@needs_export
+def test_window_remembers_size_and_tab(make_window, tmp_path):
+    ini = str(tmp_path / "gui.ini")
+    w = make_window(settings=QSettings(ini, QSettings.IniFormat))
+    w.resize(720, 520)  # fits the offscreen screen, which restoreGeometry clamps to
+    w.tabs.setCurrentWidget(w.muscles)
+    w.close()
+    again = make_window(settings=QSettings(ini, QSettings.IniFormat))
+    assert again.tabs.currentWidget() is again.muscles
+    assert (again.width(), again.height()) == (720, 520)
+    fresh = make_window()
+    assert fresh.tabs.currentWidget() is fresh.overview  # no settings: nothing remembered
+
+
+# --- background loading ------------------------------------------------------------------------
+
+@needs_export
+def test_background_refresh_keeps_the_window_responsive(make_window):
+    dialogs = ScriptedDialogs()
+    w = make_window(dialogs, background=True)
+    done = []
+    w.refreshed.connect(lambda: done.append(True))
+    assert w.stack.currentWidget() is w.loading and w.is_busy  # returned before the data loaded
+    assert w.wait_until_idle(60)
+    assert done and w.stack.currentWidget() is w.tabs
+    assert w.workouts.model.rowCount() == 103 and not w.busy.isVisibleTo(w)
+
+    # An action returns at once; the reload lands later.
+    third = next(r["key"] for r in w.review.flags_model.rows if r["set"] == "3")
+    assert "Dismissed 1" in w.review.dismiss([third])
+    assert w.is_busy and w.review.flags_model.rowCount() == 3
+    assert w.wait_until_idle(60)
+    assert w.review.flags_model.rowCount() == 2
+
+    # Two quick refreshes: only the newest result is used.
+    w.refresh()
+    w.refresh()
+    assert w.wait_until_idle(60)
+    assert w.workouts.model.rowCount() == 103 and not dialogs.errors
+
+
+@needs_export
+def test_background_import_parses_off_the_ui_thread(make_window):
+    dialogs = ScriptedDialogs()
+    w = make_window(dialogs, background=True)
+    assert w.wait_until_idle(60)
+    assert w.import_export(str(REAL_EXPORT)) is None  # continues once parsing finishes
+    assert w.wait_until_idle(60)
+    assert "No changes" in dialogs.infos[-1]
+
+
 # --- pieces ------------------------------------------------------------------------------------------
 
 def test_parse_adjustment():
@@ -299,6 +554,8 @@ def test_parse_adjustment():
 def test_charts_handle_empty_frames():
     assert charts.progress_figure(pd.DataFrame(), pd.DataFrame()).axes
     assert charts.weekly_volume_figure(pd.DataFrame()).axes
+    assert charts.bodyweight_figure([]).axes
+    assert charts.muscles_figure(pd.DataFrame(columns=["period", "muscle", "sets"])).axes
 
 
 def test_cli_gui_command_passes_options(monkeypatch, tmp_path):
