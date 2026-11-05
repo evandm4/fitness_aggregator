@@ -31,9 +31,9 @@ def muscles_label(catalog: Catalog, exercise: str) -> str:
     """Primary muscles, compact. Guesses end in ``?``; ``—`` when nothing is known."""
     primary, _ = catalog.muscles(exercise)
     if catalog.has_mapping(exercise):
-        return ", ".join(primary) if primary else "[dim]none[/dim]"
+        return escape(", ".join(primary)) if primary else "[dim]none[/dim]"
     if primary:
-        return f"[italic]{', '.join(primary)}?[/italic]"
+        return f"[italic]{escape(', '.join(primary))}?[/italic]"
     return "[dim]—[/dim]"
 
 
@@ -142,7 +142,7 @@ def muscles(
             cells.append(text)
         avg_over = complete or periods
         avg = row[avg_over].mean()
-        table.add_row(muscle.replace("_", " "), *cells, f"{avg:.1f}")
+        table.add_row(escape(muscle.replace("_", " ")), *cells, f"{avg:.1f}")
     console.print(table)
 
     unit = "a week" if by == "week" else "a week (scaled to each month's length)"

@@ -181,12 +181,12 @@ def progress(
 ):
     """Progress over time for one or more exercises, PRs starred."""
     from . import metrics, plots
-    from .cli import _check_formula, _fail, _parse_date, _resolve_exercise
+    from .cli import _check_formula, _fail, _parse_date, _resolve_exercise, esc
 
     state, console, a = _setup(ctx, raw)
     _check_formula(console, formula)
     if metric is not None and metric not in plots.METRICS:
-        _fail(console, f"unknown metric {metric!r}; use {', '.join(plots.METRICS)}.")
+        _fail(console, f"unknown metric {esc(repr(metric))}; use {', '.join(plots.METRICS)}.")
     if since:
         _parse_date(since)
     merged = {} if raw else state.store.active_merges()
