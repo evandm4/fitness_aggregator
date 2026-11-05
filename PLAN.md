@@ -360,9 +360,9 @@ Every plot function has the signature `plot_x(df, **opts) -> matplotlib.figure.F
 3. ✅ **Metrics + text commands.** `history`, `prs`, `stats`, `exercises`, plus `check` / `fix` for flagged outliers.
 4. ✅ **Similar-exercise merging.** Candidate detection, offset suggestion, `merge review` and the other `merge` commands.
 5. **Core plots.** `progress` (including a chart version of the merge preview), `volume`, `calendar`.
-6. **Metadata + remaining plots.** `exercises.toml` muscle groups, then `sets-per-muscle`, `rep-prs`, `duration`, `frequency`, and `dashboard`. `bodyweight_at()` with the placeholder.
+6. ✅ **Metadata + Apple Health bodyweight.** `exercises.toml` maps all 103 exercises to primary/secondary muscles (fixed vocabulary, keyword guesses for new names), `metrics.weekly_muscle_sets`, `fitness muscles`, and `fitness exercises --unmapped`. `fitness import-health` / `fitness bodyweight` (schema 4 `bodyweight` table, full-history replace like §2c), and every analysis uses real dated weights when present. The `sets-per-muscle` chart is wired up separately on top of `weekly_muscle_sets`; `rep-prs`, `duration`, `frequency`, and `dashboard` plots belong with the plotting work.
 
-**Later / out of scope for v1:** GUI (PySide6 desktop or a Streamlit web dashboard, both reusing `metrics` and `plots`); Apple Health bodyweight import (§2d); manual set logging from the CLI; importers for other apps (Hevy, etc.) behind the same `importers/` interface.
+**Later / out of scope for v1:** GUI (PySide6 desktop or a Streamlit web dashboard, both reusing `metrics` and `plots`); manual set logging from the CLI; importers for other apps (Hevy, etc.) behind the same `importers/` interface.
 
 ---
 

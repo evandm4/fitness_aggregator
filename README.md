@@ -4,7 +4,7 @@ A command-line tool for importing, analyzing, and graphing weightlifting logs (S
 
 ## Status
 
-Milestones 1–4 are done: parsing Strong exports, SQLite storage, merging nearby workouts, the corrections log, per-lift history, PRs, training stats, data-entry checks, and combining similar exercises with weight offsets. See [PLAN.md](PLAN.md) §8 for what comes next.
+Milestones 1–4 and 6 are done: parsing Strong exports, SQLite storage, merging nearby workouts, the corrections log, per-lift history, PRs, training stats, data-entry checks, combining similar exercises with weight offsets, muscle groups, and bodyweight from Apple Health. See [PLAN.md](PLAN.md) §8 for what comes next.
 
 ## Usage
 
@@ -32,6 +32,34 @@ fitness merge undo "hip abductor 2"
 fitness config show
 fitness config set merge_gap_minutes 45
 ```
+
+## Muscle groups
+
+`config/exercises.toml` maps every exercise to the muscles it trains, from a fixed list (chest, front_delts, side_delts, rear_delts, triceps, biceps, forearms, lats, upper_back, lower_back, abs, obliques, quads, hamstrings, glutes, adductors, abductors, calves):
+
+```toml
+[exercise."Bench Press (Barbell)"]
+primary = ["chest"]                     # each hard set counts 1
+secondary = ["triceps", "front_delts"]  # ... and 0.5 here
+```
+
+```bash
+fitness muscles                      # hard sets per muscle per week (--by month, --last N, --all, --since DATE)
+fitness exercises --unmapped         # exercises with no entry yet, with a suggested mapping
+```
+
+Hard sets are normal, failure, and drop sets. Weeks under 10 or over 20 sets for a muscle are highlighted (a common hypertrophy range). Exercises missing from the file get a keyword guess (a "curl" trains biceps), which is always labelled as a guess. `fitness exercises` shows each exercise's primary muscles.
+
+## Bodyweight from Apple Health
+
+Bodyweight only affects assisted lifts (load = bodyweight − assistance). Until you import real weights, a placeholder from settings is used (`bodyweight_lb`, 180 by default).
+
+```bash
+fitness import-health export.zip     # Health app → profile → Export All Health Data (or the export.xml inside)
+fitness bodyweight                   # recent entries, lowest/highest, trend (--last N)
+```
+
+Readings are converted to lb and averaged per day. Like Strong exports, each Health export is your full history and replaces the stored entries; the import lists new, changed, and removed days. After importing, every analysis uses the latest entry on or before each workout.
 
 Data is stored in `~/.fitness_aggregator/lifts.db` (override with `--db` or `$FITNESS_AGGREGATOR_DB`). Settings come from `config/settings.toml` when run from this folder (override with `--config`).
 
